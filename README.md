@@ -9,7 +9,7 @@
                     by AJ Hammond @ajm4n
 ```
 
-mostly vibe coded c2. not a good c2. shoutout skyler knecht, jeremy schoeneman, matt jackoski, and kevin clark
+mostly vibe coded c2. not a good c2. shoutout skyler knecht, jeremy schoeneman, matt jackoski, mason davis, and kevin clark
 
 **SockPuppets** is a professional WebSocket-based agent management framework for security research and authorized penetration testing. It features multi-architecture compilation, beacon/streaming modes, SOCKS5 proxying, and comprehensive stealth capabilities.
 
