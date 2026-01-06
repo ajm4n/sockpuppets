@@ -13,40 +13,33 @@ mostly vibe coded c2. not a good c2. shoutout skyler knecht, jeremy schoeneman, 
 
 **SockPuppets** is a professional WebSocket-based agent management framework for security research and authorized penetration testing. It features multi-architecture compilation, beacon/streaming modes, SOCKS5 proxying, and comprehensive stealth capabilities.
 
-## ⚠️ Legal Disclaimer
+##  Legal Disclaimer
 
 **FOR AUTHORIZED SECURITY RESEARCH AND TESTING ONLY**
 
-This tool is designed for:
-- Authorized penetration testing with written permission
-- Security research in controlled environments
-- Red team exercises with proper authorization
-- Educational purposes in lab environments
-- CTF competitions
-
 Unauthorized access to computer systems is illegal. Users are solely responsible for obtaining proper authorization and complying with all applicable laws.
 
-## ✨ Features
+##  Features
 
 ### Core Capabilities
-- 🔄 **Multi-platform Agents** - Python, PowerShell, JavaScript (Node.js), HTA
-- 🏗️ **Multi-Architecture Compilation** - x86, x64, ARM64 executables
-- 📡 **Dual Communication Modes** - Beacon (stealth) & Streaming (interactive)
-- 🔐 **Custom Encryption** - User-definable XOR encryption keys
-- 🌐 **SOCKS5 Proxying** - Tunnel traffic through compromised hosts
-- 🎭 **Code Obfuscation** - Automatic function/variable name randomization
-- 🔧 **Runtime Mode Switching** - Upgrade/downgrade between beacon and streaming
-- 🎨 **Custom Icons** - Blend executables with legitimate software
+-  **Multi-platform Agents** - Python, PowerShell, JavaScript (Node.js), HTA
+-  **Multi-Architecture Compilation** - x86, x64, ARM64 executables
+-  **Dual Communication Modes** - Beacon (stealth) & Streaming (interactive)
+-  **Custom Encryption** - User-definable XOR encryption keys
+-  **SOCKS5 Proxying** - Tunnel traffic through compromised hosts
+-  **Code Obfuscation** - Automatic function/variable name randomization
+-  **Runtime Mode Switching** - Upgrade/downgrade between beacon and streaming
+-  **Custom Icons** - Blend executables with legitimate software
 
 ### Operational Features
-- 📊 Real-time agent status monitoring
-- 🔁 Automatic reconnection handling
-- ⏱️ Configurable beacon intervals
-- 💻 Interactive shell access
-- 📦 UPX compression support
-- 🎯 Targeting by architecture
+-  Real-time agent status monitoring
+-  Automatic reconnection handling
+-  Configurable beacon intervals
+-  Interactive shell access
+-  UPX compression support
+-  Targeting by architecture
 
-## 🚀 Quick Start
+##  Quick Start
 
 ### Installation
 
@@ -364,34 +357,11 @@ sockpuppets> generate target.com 443 \
 - Upgrade to streaming for testing: `upgrade`
 - Review agent's last_seen timestamp
 
-## 🤝 Contributing
-
-Contributions are welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## 📄 License
-
-This project is provided "as-is" for educational and authorized security research purposes only.
-
-## 🙏 Credits
+##  Credits
 
 - **Author**: AJ Hammond (@ajm4n)
 - **Inspiration**: Kevin Clark's BadRATs and similar C2 frameworks
 - **Libraries**: websockets, PyInstaller
-
-## 📞 Contact
-
-- GitHub: [@ajm4n](https://github.com/ajm4n)
-- Twitter: [@ajm4n](https://twitter.com/ajm4n)
-
-## ⚖️ Responsible Disclosure
-
-Found a security issue? Please report responsibly:
-- Open a GitHub issue (for non-critical bugs)
-- Contact directly for security vulnerabilities
 
 ---
 
