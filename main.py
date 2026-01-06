@@ -119,6 +119,10 @@ class SockPuppetsCLI(cmd.Cmd):
                 print(f"   Beacon:     {agent['beacon_interval']}s interval")
             print()
 
+    def do_puppets(self, arg):
+        """List all agents (alias for 'agents')"""
+        return self.do_agents(arg)
+
     def do_interact(self, arg):
         """Interact with an agent: interact <agent_id>"""
         if not self.server_running:
@@ -395,7 +399,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print("=" * 70)
         print("  \033[1mstart [host] [port] [--key=K]\033[0m       - Start the server")
         print("  \033[1mstop\033[0m                                 - Stop the server")
-        print("  \033[1magents\033[0m                               - List all connected agents")
+        print("  \033[1magents / puppets\033[0m                     - List all connected agents")
         print("  \033[1minteract <agent_id>\033[0m                  - Interact with an agent")
         print("  \033[1mgenerate <host> <port> [opts]\033[0m       - Generate agent payloads")
         print("  \033[1mclear\033[0m                                - Clear the screen")
