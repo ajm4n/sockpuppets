@@ -123,6 +123,61 @@ class SockPuppetsCLI(cmd.Cmd):
         """List all agents (alias for 'agents')"""
         return self.do_agents(arg)
 
+    def do_beacons(self, arg):
+        """List only beacon mode agents"""
+        if not self.server_running:
+            print("[-] Server is not running. Start it first with 'start'")
+            return
+
+        agents = self.server.get_agent_list()
+        beacon_agents = [a for a in agents if a['mode'] == 'beacon']
+
+        if not beacon_agents:
+            print("[-] No beacon agents connected")
+            return
+
+        print("\n\033[1mBeacon Agents:\033[0m")
+        print("=" * 80)
+        active_agents = self.server.get_active_agents()
+        for agent in beacon_agents:
+            status = "\033[92m●\033[0m" if agent in active_agents else "\033[91m●\033[0m"
+            print(f"{status} \033[1m{agent['id']}\033[0m \033[93m[BEACON]\033[0m")
+            print(f"   Hostname:   {agent['hostname']}")
+            print(f"   Username:   {agent['username']}")
+            print(f"   OS:         {agent['os']}")
+            print(f"   IP:         {agent['ip']}")
+            print(f"   Connected:  {agent['connected_at']}")
+            print(f"   Last Seen:  {agent['last_seen']}")
+            print(f"   Beacon:     {agent['beacon_interval']}s interval")
+            print()
+
+    def do_streamers(self, arg):
+        """List only streaming mode agents"""
+        if not self.server_running:
+            print("[-] Server is not running. Start it first with 'start'")
+            return
+
+        agents = self.server.get_agent_list()
+        streaming_agents = [a for a in agents if a['mode'] == 'streaming']
+
+        if not streaming_agents:
+            print("[-] No streaming agents connected")
+            return
+
+        print("\n\033[1mStreaming Agents:\033[0m")
+        print("=" * 80)
+        active_agents = self.server.get_active_agents()
+        for agent in streaming_agents:
+            status = "\033[92m●\033[0m" if agent in active_agents else "\033[91m●\033[0m"
+            print(f"{status} \033[1m{agent['id']}\033[0m \033[92m[STREAM]\033[0m")
+            print(f"   Hostname:   {agent['hostname']}")
+            print(f"   Username:   {agent['username']}")
+            print(f"   OS:         {agent['os']}")
+            print(f"   IP:         {agent['ip']}")
+            print(f"   Connected:  {agent['connected_at']}")
+            print(f"   Last Seen:  {agent['last_seen']}")
+            print()
+
     def do_interact(self, arg):
         """Interact with an agent: interact <agent_id>"""
         if not self.server_running:
@@ -400,6 +455,8 @@ class SockPuppetsCLI(cmd.Cmd):
         print("  \033[1mstart [host] [port] [--key=K]\033[0m       - Start the server")
         print("  \033[1mstop\033[0m                                 - Stop the server")
         print("  \033[1magents / puppets\033[0m                     - List all connected agents")
+        print("  \033[1mbeacons\033[0m                              - List only beacon agents")
+        print("  \033[1mstreamers\033[0m                            - List only streaming agents")
         print("  \033[1minteract <agent_id>\033[0m                  - Interact with an agent")
         print("  \033[1mgenerate <host> <port> [opts]\033[0m       - Generate agent payloads")
         print("  \033[1mclear\033[0m                                - Clear the screen")
