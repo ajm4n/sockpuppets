@@ -368,7 +368,7 @@ sockpuppets> generate target.com 443 \
 **Remember**: Always obtain proper authorization before testing. Unauthorized access is illegal.
 
 ```bash
-# Happy hunting! 🎭
+# Happy hunting!
 sockpuppets> start 0.0.0.0 8443
 sockpuppets> generate target.com 443 --beacon --interval=300 --multi-arch
 ```
