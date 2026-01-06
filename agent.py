@@ -47,7 +47,11 @@ class AgentGenerator:
                               beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
                               obfuscate: bool = True) -> str:
         """Generate Python agent"""
-        template_path = self.templates_dir / "agent_template.py"
+        # Use minimal beacon template for beacon mode (staged loading)
+        if beacon_mode:
+            template_path = self.templates_dir / "agent_beacon_minimal.py"
+        else:
+            template_path = self.templates_dir / "agent_template.py"
 
         if not template_path.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")

