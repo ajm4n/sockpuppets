@@ -12,10 +12,15 @@
 not a good c2. websockets based command-and-control framework designed for stage0/stage0.5. 
 
 shoutout and special thanks to: 
+
 skyler knecht @skylerknecht
+
 jeremy schoeneman @y4utj4
+
 matt jackoski @ds-koolaid
+
 mason davis @mas0nd
+
 kevin clark @clarkkev
 
 ##  Features
