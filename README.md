@@ -265,8 +265,3 @@ RUN pip install -r requirements.txt
 EXPOSE 8443
 CMD ["python", "server.py", "--host", "0.0.0.0", "--port", "8443"]
 ```
-
-# Happy hunting!
-sockpuppets> start 0.0.0.0 8443
-sockpuppets> generate target.com 443 --beacon --interval=300 --multi-arch
-```
