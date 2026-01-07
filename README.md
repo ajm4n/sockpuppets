@@ -9,7 +9,7 @@
                     by AJ Hammond @ajm4n
 ```
 
-not a good c2. websockets 
+not a good c2. websockets based command-and-control framework designed for stage0/stage0.5. 
 
 shoutout and special thanks to: 
 skyler knecht @skylerknecht
