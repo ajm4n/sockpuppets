@@ -11,6 +11,8 @@
 
 not a good c2. websockets based command-and-control framework designed for stage0/stage0.5. 
 
+[![asciicast](https://asciinema.org/a/XLl8Y7jbLiMjdayNE276I3CLa.svg)](https://asciinema.org/a/XLl8Y7jbLiMjdayNE276I3CLa)
+
 <br>
 
 ***shoutout and special thanks to:***
