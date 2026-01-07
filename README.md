@@ -11,7 +11,7 @@
 
 not a good c2. websockets based command-and-control framework designed for stage0/stage0.5. 
 
-
+<br>
 
 ***shoutout and special thanks to:***
 
