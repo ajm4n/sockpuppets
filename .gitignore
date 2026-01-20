@@ -66,3 +66,5 @@ desktop.ini
 # AI progress tracking (local only)
 .ai-progress.md
 .claude/
+.gitignore
+PR_DESCRIPTION.md
