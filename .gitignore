@@ -50,6 +50,9 @@ output/
 # Logs
 *.log
 
+# Agent encryption keys (persisted per-session)
+.agent_keys.json
+
 # Environment variables
 .env
 .env.local
