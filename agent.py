@@ -268,8 +268,8 @@ class AgentGenerator:
             'getpass': self.random_var_name(),
         }
         for original, alias in import_aliases.items():
-            # Replace 'import X' with 'import X as alias' and all usages
-            content = re.sub(rf'^(import {original})\s*$', rf'import {original} as {alias}', content, flags=re.MULTILINE)
+            # Replace 'import X' with 'import X as alias' (both top-level and local/indented)
+            content = re.sub(rf'^(\s*)(import {original})\s*$', rf'\g<1>import {original} as {alias}', content, flags=re.MULTILINE)
             # Replace usages of the module name (e.g., platform.system())
             content = re.sub(rf'\b{original}\.', f'{alias}.', content)
 

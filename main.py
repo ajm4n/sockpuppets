@@ -756,6 +756,10 @@ class SockPuppetsCLI(cmd.Cmd):
             print("[-] Usage: generate <host> <port> [options]")
             return
 
+        # HTTP/HTTPS agents default to beacon mode (use --stream to override)
+        if transport in ('http', 'https') and not beacon_mode:
+            beacon_mode = True
+
         print(f"[*] Generating agents for {host}:{port}...")
         print(f"[*] Transport: {transport.upper()}")
         if key != 'SOCKPUPPETS_KEY_2026':

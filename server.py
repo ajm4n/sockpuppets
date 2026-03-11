@@ -592,7 +592,7 @@ class SockPuppetsServer:
                                     'command': cmd,
                                     'timestamp': datetime.now().isoformat()
                                 })
-                                logger.info(f"HTTP command sent to {agent_id}: {cmd}")
+                                logger.debug(f"HTTP command sent to {agent_id}: {cmd}")
                             except asyncio.QueueEmpty:
                                 break
                     else:
@@ -604,7 +604,7 @@ class SockPuppetsServer:
                                 'command': cmd,
                                 'timestamp': datetime.now().isoformat()
                             })
-                            logger.info(f"HTTP long-poll command sent to {agent_id}: {cmd}")
+                            logger.debug(f"HTTP long-poll command sent to {agent_id}: {cmd}")
                         except asyncio.TimeoutError:
                             pass  # No commands, return empty
 
@@ -1185,7 +1185,7 @@ class SockPuppetsServer:
             return
 
         app = self._create_http_app()
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, host, port)
         await site.start()
@@ -1216,7 +1216,7 @@ class SockPuppetsServer:
             raise RuntimeError("Failed to create SSL context")
 
         app = self._create_http_app()
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, host, port, ssl_context=ssl_ctx)
         await site.start()
