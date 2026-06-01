@@ -1,0 +1,1 @@
+/Users/ajman/Documents/Tools/websocketsc2/agent_rust/target/x86_64-pc-windows-gnu/release/svcmonitor.exe: /Users/ajman/Documents/Tools/websocketsc2/agent_rust/src/ghost.rs /Users/ajman/Documents/Tools/websocketsc2/agent_rust/src/main.rs
