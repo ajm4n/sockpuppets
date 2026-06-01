@@ -20,6 +20,7 @@ sha2 = "0.10"
 hex = "0.4"
 url = "2"
 toml = "0.8"
+aes-gcm = "0.10"
 tungstenite = { version = "0.24", features = ["native-tls"], optional = true }
 native-tls = { version = "0.2", optional = true }
 

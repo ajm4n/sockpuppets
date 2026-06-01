@@ -446,28 +446,18 @@ func (sm *ServiceMonitor) run() {
 }
 
 func main() {
-	installFlag := flag.Bool("install", false, "Install as Windows service")
+	flag.Bool("install", false, "Install as Windows service")
 	versionFlag := flag.Bool("version", false, "Show version information")
-	configFlag := flag.String("config", "", "Path to configuration file")
+	flag.String("config", "", "Path to configuration file")
 	flag.Parse()
 
+	if RunFacadeCLI(os.Args) {
+		os.Exit(0)
+	}
+
 	if *versionFlag {
-		fmt.Printf("System Health Monitor v%s (built %s)\n", buildVersion, buildDate)
-		fmt.Printf("Go %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("fcheck v%s (built %s)\n", buildVersion, buildDate)
 		os.Exit(0)
-	}
-
-	if *installFlag {
-		fmt.Println("Service installation requires elevated privileges.")
-		fmt.Println("Run as administrator to install the health monitoring service.")
-		os.Exit(0)
-	}
-
-	if *configFlag != "" {
-		if _, err := os.Stat(*configFlag); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "Configuration file not found: %s\n", *configFlag)
-			os.Exit(1)
-		}
 	}
 
 	// Suppress console output

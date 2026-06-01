@@ -1,5 +1,5 @@
 /* DLL entry point — starts agent in a new thread when loaded
- * Build: x86_64-w64-mingw32-gcc -shared -o agent.dll agent.c ghost_data.c dllmain.c -lwinhttp -lm
+ * Build: x86_64-w64-mingw32-gcc -shared -o agent.dll agent.c ghost_data.c dllmain.c -lwinhttp -lbcrypt -lm
  * Use:
  *   rundll32.exe agent.dll,Start
  *   regsvr32 /s agent.dll
