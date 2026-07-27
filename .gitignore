@@ -1,0 +1,86 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Generated agents
+output/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Logs
+*.log
+
+# Agent encryption keys (persisted per-session)
+.agent_keys.json
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# OS specific
+Thumbs.db
+desktop.ini
+
+# AI progress tracking (local only)
+.ai-progress.md
+.claude/
+
+# Operator-specific assets (not for public repo)
+profiles/private/
+patterns/private/
+transforms/private/
+redirectors/private/
+obfuscators/private/
+
+PR_DESCRIPTION.md
+vt_test_*
+*.pvm
+
+# Rust build artifacts
+agent_rust/target/
