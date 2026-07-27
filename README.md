@@ -1,6 +1,6 @@
 # sockpuppets
 
-<img width="543" height="724" alt="sockpuppets" src="https://github.com/user-attachments/assets/7105b452-0388-457b-b70f-3e2b623b7155" />
+<img width="271.5" and height="362" alt="sockpuppets" src="https://github.com/user-attachments/assets/7105b452-0388-457b-b70f-3e2b623b7155" />
 
 multi-language, multi-transport c2 framework with edr evasion, polymorphic code morphing, malleable c2 profiles, and steganographic delivery.
 
