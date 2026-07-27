@@ -5,7 +5,7 @@
 multi-language, multi-transport c2 framework with edr evasion, polymorphic code morphing, malleable c2 profiles, and steganographic delivery.
 
 **shoutout and special thanks to:**
-Skyler Knecht (@skylerknecht), Jeremy Schoeneman (@y4utj4), Matt Jackoski (@ds-koolaid), Mason Davis (@mas0nd), Kevin Clark (@clarkkev)
+Skyler Knecht (@skylerknecht), Jeremy Schoeneman (@y4utj4), Matt Jackoski (@ds-koolaid), Mason Davis (@mas0nd), Kevin Clark (@clarkkev), Michael Weber (@michaelweber)
 
 ---
 
