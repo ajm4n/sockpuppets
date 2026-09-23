@@ -71,6 +71,10 @@ desktop.ini
 .ai-progress.md
 .claude/
 
+keys/
+.agent_keys.json
+generated_agents/
+
 # Operator-specific assets (not for public repo)
 profiles/private/
 patterns/private/

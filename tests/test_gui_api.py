@@ -25,7 +25,8 @@ def server():
 
 @pytest.fixture
 def auth_token():
-    token = operators.add("test-operator")
+    operators.add("test-operator", "test-pass", must_change=False)
+    token = operators.create_session("test-operator")
     yield token
     operators.remove("test-operator")
 
@@ -86,12 +87,16 @@ def test_invalid_token_rejected(client):
 def test_operator_store_lifecycle():
     from gui.auth import OperatorStore
     store = OperatorStore()
-    token = store.add("alice")
+    store.add("alice", "secret", must_change=False)
+    token = store.create_session("alice")
     assert isinstance(token, str)
     assert len(token) == 64
-    assert store.verify(token) == "alice"
-    assert store.verify("wrong-token") is None
+    name, must_change = store.verify("alice", "secret")
+    assert name == "alice"
+    assert must_change is False
+    assert store.verify_session(token) == "alice"
+    assert store.verify_session("wrong-token") is None
     assert "alice" in store.list()
     assert store.remove("alice")
-    assert store.verify(token) is None
+    assert store.verify_session(token) is None
     assert not store.remove("alice")

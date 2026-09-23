@@ -88,7 +88,7 @@ class SockPuppetsCLI(cmd.Cmd):
 
         # Determine listener type
         listener_type = 'websocket'
-        if args and args[0].lower() in ('http', 'https', 'ws', 'websocket'):
+        if args and args[0].lower() in ('http', 'https', 'ws', 'websocket', 'dns', 'smb'):
             listener_type = args.pop(0).lower()
             if listener_type == 'ws':
                 listener_type = 'websocket'
@@ -100,7 +100,7 @@ class SockPuppetsCLI(cmd.Cmd):
         certkey_path = None
 
         # Default ports per listener type
-        default_ports = {'websocket': 8443, 'http': 8080, 'https': 443}
+        default_ports = {'websocket': 8443, 'http': 8080, 'https': 443, 'dns': 5353, 'smb': 4455}
 
         positional_idx = 0
         i = 0
@@ -159,6 +159,16 @@ class SockPuppetsCLI(cmd.Cmd):
             elif listener_type == 'https':
                 future = asyncio.run_coroutine_threadsafe(
                     self.server.start_https_listener(host, port, cert_path, certkey_path), self.loop
+                )
+                future.result(timeout=5)
+            elif listener_type == 'dns':
+                future = asyncio.run_coroutine_threadsafe(
+                    self.server.start_dns_listener(host, port), self.loop
+                )
+                future.result(timeout=5)
+            elif listener_type == 'smb':
+                future = asyncio.run_coroutine_threadsafe(
+                    self.server.start_smb_listener(host, port), self.loop
                 )
                 future.result(timeout=5)
 

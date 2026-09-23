@@ -1,4 +1,4 @@
-//go:build !transport_ws
+//go:build !transport_ws && !transport_dns && !transport_smb
 
 // transport_http.go — HTTP/HTTPS transport (default, no external deps)
 package main

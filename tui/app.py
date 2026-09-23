@@ -51,10 +51,9 @@ class SockPuppetsTUI(App):
             AgentTable(id="agent-table"),
             id="agent-panel",
         )
-        yield TabbedContent(
-            TabPane("Event Log", EventLogPanel(id="event-log"), id="tab-event-log"),
-            id="bottom-panel",
-        )
+        with TabbedContent(id="bottom-panel"):
+            with TabPane("Event Log", id="tab-event-log"):
+                yield EventLogPanel(id="event-log")
         yield StatusBar(id="status-bar")
         yield Footer()
 

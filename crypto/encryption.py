@@ -1,62 +1,57 @@
-"""Shared AES-256-GCM encryption used by both server and agent templates.
+"""AES-256-GCM wire crypto.
 
-Protocol format: base64(b'AES1' + nonce(12) + ciphertext)
-Fallback: base64(XOR(data, key))
+Protocol: base64(b'AES1' + nonce(12) + ciphertext+tag).
+The AES key is HKDF-SHA256 of the agent key, not a raw SHA-256 digest.
+A key embedded in an agent can still be recovered by reversing the binary.
 """
 
 import os
 import base64
-import hashlib
+
+SALT = b'sockpuppets-salt-v1'
+INFO = b'sockpuppets-aes-256-gcm-v1'
 
 
 def derive_aes_key(key: bytes) -> bytes:
     if isinstance(key, str):
         key = key.encode()
-    return hashlib.sha256(key).digest()
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=SALT, info=INFO).derive(key)
 
 
 def aes_encrypt(data: str, key: bytes) -> str:
     if isinstance(key, str):
         key = key.encode()
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aes_key = derive_aes_key(key)
-        nonce = os.urandom(12)
-        ct = AESGCM(aes_key).encrypt(nonce, data.encode('utf-8'), None)
-        return base64.b64encode(b'AES1' + nonce + ct).decode()
-    except ImportError:
-        return xor_encrypt(data, key)
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    nonce = os.urandom(12)
+    ct = AESGCM(derive_aes_key(key)).encrypt(nonce, data.encode('utf-8'), None)
+    return base64.b64encode(b'AES1' + nonce + ct).decode()
 
 
 def aes_decrypt(encoded: str, key: bytes) -> str:
     if isinstance(key, str):
         key = key.encode()
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     raw = base64.b64decode(encoded.encode())
-    if raw[:4] == b'AES1':
-        try:
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-            aes_key = derive_aes_key(key)
-            pt = AESGCM(aes_key).decrypt(raw[4:16], raw[16:], None)
-            return pt.decode('utf-8')
-        except Exception:
-            pass
-    return xor_decrypt_raw(raw, key)
+    if len(raw) < 16 or raw[:4] != b'AES1':
+        raise ValueError('ciphertext rejected')
+    pt = AESGCM(derive_aes_key(key)).decrypt(raw[4:16], raw[16:], None)
+    return pt.decode('utf-8')
 
 
-def xor_encrypt(data: str, key: bytes) -> str:
-    if isinstance(key, str):
-        key = key.encode()
-    encoded = data.encode('latin-1')
-    encrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(encoded))
-    return base64.b64encode(encrypted).decode()
+def seal_bytes(data: bytes) -> tuple:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    ct = AESGCM(key).encrypt(nonce, data, None)
+    return key, nonce, ct
 
 
-def xor_decrypt_raw(raw: bytes, key: bytes) -> str:
-    if isinstance(key, str):
-        key = key.encode()
-    decrypted = bytes(a ^ key[i % len(key)] for i, a in enumerate(raw))
-    return decrypted.decode('latin-1')
+def open_bytes(key: bytes, nonce: bytes, ct: bytes) -> bytes:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    return AESGCM(key).decrypt(nonce, ct, None)
 
 
 def generate_unique_key() -> str:
-    return hashlib.sha256(os.urandom(16)).hexdigest()[:24]
+    return os.urandom(32).hex()

