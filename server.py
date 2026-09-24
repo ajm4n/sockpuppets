@@ -851,11 +851,14 @@ class SockPuppetsServer:
                     except asyncio.QueueFull:
                         pass
                 if command:
+                    shown = output
+                    if shown.startswith('HDIMG:'):
+                        shown = f'HDIMG encrypted-frame {len(output)}'
                     self.events.emit({
                         "event": "agent_result",
                         "agent_id": agent_id,
                         "command": command,
-                        "output": output[:500],
+                        "output": shown[:500],
                     })
 
             commands = []

