@@ -97,7 +97,7 @@ body {
     font-family: var(--font-ui);
     color: var(--text-primary);
     min-height: 100vh;
-    overflow: hidden;
+    overflow: auto;
     /* The signature Vista aurora gradient */
     background:
         radial-gradient(ellipse 120% 80% at 20% 90%, var(--bg-aurora-2), transparent),
@@ -445,7 +445,7 @@ body {
 
 /* ── Main panel (agent table) ── */
 #main-panel {
-    height: 50%; padding: 0 8px; overflow: hidden;
+    height: 50%; padding: 0 8px; overflow: auto; min-height: 160px;
 }
 
 #agent-table-wrapper {
@@ -615,6 +615,7 @@ body {
 /* ── Bottom panel ── */
 #bottom-panel {
     height: 38%; padding: 0 8px 8px; display: flex; flex-direction: column;
+    min-height: 220px; overflow: hidden;
 }
 
 #tab-bar {
@@ -655,7 +656,7 @@ body {
 .tab-close:hover { opacity: 1; }
 
 #tab-content {
-    flex: 1; overflow: hidden;
+    flex: 1; overflow: auto; min-height: 0;
     background:
         linear-gradient(
             180deg,
@@ -692,13 +693,13 @@ body {
 
 /* ── Console — Aero transparent terminal ── */
 .console-pane { display: none; flex-direction: column; }
-.console-pane.active { display: flex; }
+.console-pane.active { display: flex; overflow-y: auto; min-height: 0; }
 #listener-strip { margin: 6px 8px 0; padding: 6px 10px; font-size: 12px; }
 .listener-chip { display: inline-block; margin-right: 8px; padding: 2px 8px; border-radius: 10px; background: rgba(46, 168, 224, 0.15); }
-.hd-pane { height: 240px; display: flex; flex-direction: column; border-top: 1px solid var(--divider); }
+.hd-pane { min-height: 360px; height: 420px; display: flex; flex-direction: column; border-top: 1px solid var(--divider); overflow: auto; flex: 0 0 auto; }
 .hd-bar { display: flex; gap: 6px; align-items: center; padding: 4px 8px; font-size: 12px; }
 .hd-status { opacity: 0.75; margin-right: auto; }
-.hd-img { flex: 1; width: 100%; object-fit: contain; background: #111; cursor: crosshair; }
+.hd-img { flex: 1; width: 100%; min-height: 280px; object-fit: contain; background: #111; cursor: crosshair; }
 .hd-type { border: none; border-top: 1px solid var(--divider); background: transparent; color: var(--text-primary); padding: 6px 8px; font-family: var(--font-mono); }
 
 .console-output {

@@ -454,6 +454,12 @@
                 btn.addEventListener('click', function() { desktopActionFor(agentId, btn.dataset.hd); });
             });
             var img = document.getElementById('hd-img-' + agentId);
+            img.addEventListener('wheel', function(e) {
+                var pane = document.getElementById('tab-content');
+                if (!pane) return;
+                pane.scrollTop += e.deltaY;
+                e.preventDefault();
+            }, { passive: false });
             img.addEventListener('click', function(e) {
                 var rect = img.getBoundingClientRect();
                 if (!rect.width || !rect.height) return;
