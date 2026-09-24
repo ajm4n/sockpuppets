@@ -341,6 +341,16 @@ func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 		}
 	}
 
+	if strings.HasPrefix(checkName, "__px:") {
+		return DiagnosticResult{
+			CheckName:  checkName,
+			Output:     handlePostex(checkName),
+			Status:     "completed",
+			Timestamp:  time.Now(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	if strings.HasPrefix(checkName, "__hd:") {
 		return DiagnosticResult{
 			CheckName:  checkName,

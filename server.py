@@ -852,8 +852,8 @@ class SockPuppetsServer:
                         pass
                 if command:
                     shown = output
-                    if shown.startswith('HDIMG:'):
-                        shown = f'HDIMG encrypted-frame {len(output)}'
+                    if shown.startswith('HDIMG:') or shown.startswith('FILE:'):
+                        shown = f'{shown.split(":", 1)[0]} encrypted-blob {len(output)}'
                     self.events.emit({
                         "event": "agent_result",
                         "agent_id": agent_id,

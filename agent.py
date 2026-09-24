@@ -1234,6 +1234,9 @@ def {cmd_func}(cmd):
         hd_path = self.templates_dir / 'hidden_desktop.py'
         if hd_path.exists():
             wire_src += '\n' + hd_path.read_text()
+        px_path = self.templates_dir / 'postex.py'
+        if px_path.exists():
+            wire_src += '\n' + px_path.read_text()
         shebang_at = content.find('\n', content.find('#!'))
         if shebang_at > 0:
             content = content[:shebang_at + 1] + '\n' + wire_src + '\n' + content[shebang_at + 1:]
