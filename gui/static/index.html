@@ -81,6 +81,7 @@
     <!-- Context menu -->
     <div id="context-menu" class="glass hidden">
         <button data-action="interact">Interact</button>
+        <button data-action="desktop">Hidden Desktop</button>
         <button data-action="sleep">Sleep...</button>
         <button data-action="socks">SOCKS Proxy...</button>
         <hr>
@@ -169,6 +170,20 @@
                 </div>
             </form>
             <div id="generate-results" class="hidden"></div>
+        </div>
+    </div>
+
+    <div id="desktop-overlay" class="modal-overlay hidden">
+        <div class="modal glass desktop-modal">
+            <h2>Hidden Desktop</h2>
+            <div class="form-actions">
+                <button type="button" class="glass-btn primary" id="desktop-start">Start</button>
+                <button type="button" class="glass-btn" id="desktop-frame">Frame</button>
+                <button type="button" class="glass-btn" id="desktop-stop">Stop</button>
+                <button type="button" class="glass-btn" id="desktop-close">Close</button>
+            </div>
+            <div id="desktop-status" class="hint"></div>
+            <img id="desktop-img" alt="hidden desktop" class="hidden">
         </div>
     </div>
 

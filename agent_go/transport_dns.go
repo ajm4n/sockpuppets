@@ -188,11 +188,11 @@ func (t *ActiveTransport) beacon(agentID string, handler func(string) string) er
 	var pending []map[string]interface{}
 	for {
 		cmds, err := t.Checkin(agentID, pending)
-		pending = nil
 		if err != nil {
 			time.Sleep(5 * time.Second)
 			continue
 		}
+		pending = nil
 		if len(cmds) == 1 {
 			if tp, _ := cmds[0]["type"].(string); tp == "reregister" {
 				if id, _ := cmds[0]["agent_id"].(string); id != "" {

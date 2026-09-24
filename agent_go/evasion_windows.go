@@ -474,6 +474,9 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 	// Initialize thread attribute list
 	var attrListSize uintptr
 	pInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&attrListSize)))
+	if attrListSize == 0 {
+		return nil, fmt.Errorf("empty attribute list")
+	}
 	attrList := make([]byte, attrListSize)
 	attrListPtr := unsafe.Pointer(&attrList[0])
 

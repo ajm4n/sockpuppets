@@ -172,11 +172,11 @@ func (t *ActiveTransport) StartStreaming(agentID string, handler func(string) st
 	var pending []map[string]interface{}
 	for {
 		cmds, err := t.Checkin(agentID, pending)
-		pending = nil
 		if err != nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
+		pending = nil
 		for _, cmd := range cmds {
 			command, _ := cmd["command"].(string)
 			if command == "__kill" {

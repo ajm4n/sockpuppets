@@ -746,6 +746,10 @@ body {
     caret-color: var(--primary-light);
 }
 
+.desktop-modal { width: min(860px, 92vw); }
+#desktop-img { width: 100%; margin-top: 12px; background: #111; }
+#desktop-status { margin-top: 8px; }
+
 /* ── Context menu — Aero popup ── */
 #context-menu {
     position: fixed; z-index: 100; min-width: 190px;
