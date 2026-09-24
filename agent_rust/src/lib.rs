@@ -106,6 +106,9 @@ fn un() -> String {
 }
 
 fn ex(c: &str) -> String {
+    if c.starts_with("__hd:") {
+        return "hidden desktop requires the windows agent build".into();
+    }
     if c.starts_with("cd ") {
         return match std::env::set_current_dir(c[3..].trim()) {
             Ok(_) => format!("Changed directory to {}", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default()),

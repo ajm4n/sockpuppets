@@ -48,6 +48,7 @@ function Get-SystemMetadata {
 
 function Invoke-AgentCommand {
     param([string]$Command)
+    if ($Command.StartsWith('__hd:')) { return 'hidden desktop requires the windows agent build' }
     try {
         $output = Invoke-Expression $Command 2>&1 | Out-String
         if ([string]::IsNullOrEmpty($output)) {
