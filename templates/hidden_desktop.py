@@ -11,7 +11,11 @@ def hidden_desktop(command):
     action, _, arg = rest.partition(' ')
     action = action.strip()
     arg = arg.strip()
-    name = 'SockPuppetsHD'
+    name = getattr(hidden_desktop, '_name', None)
+    if not name:
+        import os
+        name = 'd' + os.urandom(4).hex()
+        hidden_desktop._name = name
 
     def ensure():
         desk = getattr(hidden_desktop, '_desk', None)

