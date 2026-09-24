@@ -97,7 +97,9 @@ body {
     font-family: var(--font-ui);
     color: var(--text-primary);
     min-height: 100vh;
-    overflow: auto;
+    height: auto;
+    overflow-x: hidden;
+    overflow-y: scroll;
     /* The signature Vista aurora gradient */
     background:
         radial-gradient(ellipse 120% 80% at 20% 90%, var(--bg-aurora-2), transparent),
@@ -444,8 +446,9 @@ body {
 #operators-list { font-size: 12px; color: var(--text-muted); }
 
 /* ── Main panel (agent table) ── */
+#app { min-height: 100vh; height: auto; }
 #main-panel {
-    height: 50%; padding: 0 8px; overflow: auto; min-height: 160px;
+    height: auto; max-height: 42vh; padding: 0 8px; overflow: auto; min-height: 180px;
 }
 
 #agent-table-wrapper {
@@ -614,8 +617,8 @@ body {
 
 /* ── Bottom panel ── */
 #bottom-panel {
-    height: 38%; padding: 0 8px 8px; display: flex; flex-direction: column;
-    min-height: 220px; overflow: hidden;
+    height: auto; min-height: 70vh; padding: 0 8px 24px; display: flex; flex-direction: column;
+    overflow: visible;
 }
 
 #tab-bar {
@@ -656,7 +659,7 @@ body {
 .tab-close:hover { opacity: 1; }
 
 #tab-content {
-    flex: 1; overflow: auto; min-height: 0;
+    flex: 1 0 auto; overflow: visible; min-height: 60vh;
     background:
         linear-gradient(
             180deg,
