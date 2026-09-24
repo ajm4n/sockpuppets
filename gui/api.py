@@ -191,6 +191,13 @@ async def send_command(agent_id: str, req: CommandRequest):
     return {"output": result}
 
 
+@router.get("/agents/{agent_id}/desktop/view")
+async def desktop_view(agent_id: str):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _server.get_desktop_view(agent_id)
+
+
 @router.get("/agents/{agent_id}/results")
 async def get_results(agent_id: str, clear: bool = False):
     if not _server or agent_id not in _server.agents:
