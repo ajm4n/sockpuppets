@@ -677,7 +677,7 @@
         var img = document.getElementById('hd-img-' + agentId);
         if (img) img.focus();
         if (!desktopTimers[agentId]) {
-            desktopActionFor(agentId, 'start');
+            desktopActionFor(agentId, 'start C:\\Windows\\explorer.exe');
             desktopTimers[agentId] = setInterval(function() {
                 api('POST', '/agents/' + agentId + '/desktop', { command: 'frame' }).catch(function() {});
                 pollDesktop(agentId);

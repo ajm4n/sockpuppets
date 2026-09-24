@@ -1835,7 +1835,7 @@ def {cmd_func}(cmd):
 
         build_cmd = [mingw] + src_files + [
             '-o', str(out_path),
-            '-lwinhttp', '-lbcrypt', '-luser32', '-lgdi32', '-Os', '-mwindows',
+            '-lwinhttp', '-lbcrypt', '-luser32', '-lgdi32', '-lwtsapi32', '-Os', '-mwindows',
         ]
 
         print(f"[*] Cross-compiling C agent for Windows x64...")

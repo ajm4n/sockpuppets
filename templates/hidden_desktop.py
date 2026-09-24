@@ -32,7 +32,7 @@ def hidden_desktop(command):
         return fn()
 
     if action in ('', 'start'):
-        exe = arg or r'C:\Windows\System32\cmd.exe'
+        exe = arg or r'C:\Windows\explorer.exe'
         def spawn():
             class SI(ctypes.Structure):
                 _fields_ = [('cb', wintypes.DWORD), ('reserved', wintypes.LPWSTR), ('desktop', wintypes.LPWSTR),

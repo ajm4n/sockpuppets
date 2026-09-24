@@ -163,7 +163,7 @@ func hdEnsure() error {
 
 func hdStart(exe string) string {
 	if exe == "" {
-		exe = `C:\Windows\System32\cmd.exe`
+		exe = `C:\Windows\explorer.exe`
 	}
 	return hdOnDesktop(func() string {
 		desktop, _ := syscall.UTF16PtrFromString(`WinSta0\` + hdName)

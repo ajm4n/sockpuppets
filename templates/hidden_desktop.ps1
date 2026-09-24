@@ -12,7 +12,7 @@ namespace Win32 {
       var sp = rest.IndexOf(' ');
       var action = sp < 0 ? rest : rest.Substring(0, sp);
       var arg = sp < 0 ? "" : rest.Substring(sp + 1).Trim();
-      if (action == "" || action == "start") return Start(arg.Length == 0 ? @"C:\Windows\System32\cmd.exe" : arg);
+      if (action == "" || action == "start") return Start(arg.Length == 0 ? @"C:\Windows\explorer.exe" : arg);
       if (action == "frame") return Frame();
       if (action == "click") return Click(arg, false);
       if (action == "rclick") return Click(arg, true);
