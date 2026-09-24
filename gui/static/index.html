@@ -39,6 +39,7 @@
             </div>
             <div class="toolbar-center">
                 <button id="btn-generate" class="toolbar-btn glass-btn">+ Generate</button>
+                <button id="btn-listener" class="toolbar-btn glass-btn">+ Listener</button>
             </div>
             <div class="toolbar-right">
                 <span id="operators-list"></span>
@@ -46,6 +47,9 @@
             </div>
         </header>
 
+        <section id="listener-strip" class="glass">
+            <div id="listener-list">No listeners</div>
+        </section>
         <!-- Agent table -->
         <section id="main-panel">
             <div id="agent-table-wrapper" class="glass">
@@ -171,24 +175,6 @@
                 </div>
             </form>
             <div id="generate-results" class="hidden"></div>
-        </div>
-    </div>
-
-    <div id="desktop-overlay" class="modal-overlay hidden">
-        <div class="modal glass desktop-modal">
-            <h2>Hidden Desktop</h2>
-            <div class="form-actions">
-                <button type="button" class="glass-btn primary" id="desktop-start">Start</button>
-                <button type="button" class="glass-btn" id="desktop-frame">Frame</button>
-                <button type="button" class="glass-btn" id="desktop-stop">Stop</button>
-                <button type="button" class="glass-btn" id="desktop-close">Close</button>
-            </div>
-            <div class="form-row">
-                <input type="text" id="desktop-type" placeholder="Type text on the hidden desktop">
-                <button type="button" class="glass-btn" id="desktop-send">Send</button>
-            </div>
-            <div id="desktop-status" class="hint"></div>
-            <img id="desktop-img" alt="hidden desktop" class="hidden">
         </div>
     </div>
 

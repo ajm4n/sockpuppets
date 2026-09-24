@@ -826,6 +826,7 @@ class SockPuppetsServer:
             agent.last_seen = datetime.now()
             transport_type = 'https' if request.secure else 'http'
             agent.transport_type = transport_type
+            self.events.emit({"event": "agent_checkin", "agent_id": agent_id, "transport": transport_type})
             metadata = data.get('metadata', {})
             if metadata:
                 agent.mode = metadata.get('mode', agent.mode)
@@ -1875,6 +1876,7 @@ class SockPuppetsServer:
             'started_at': datetime.now().isoformat()
         }
         logger.info(f"WebSocket listener started on {host}:{port}")
+        self.events.emit({"event": "listener_started", "listener_type": "websocket", "host": host, "port": port})
 
     async def start_http_listener(self, host: str = '0.0.0.0', port: int = 8080):
         """Start HTTP listener"""
@@ -1901,6 +1903,7 @@ class SockPuppetsServer:
             'started_at': datetime.now().isoformat()
         }
         logger.info(f"HTTP listener started on {host}:{port}")
+        self.events.emit({"event": "listener_started", "listener_type": "http", "host": host, "port": port})
 
     async def start_https_listener(self, host: str = '0.0.0.0', port: int = 443,
                                     cert_path: Optional[str] = None, key_path: Optional[str] = None):
@@ -1933,6 +1936,7 @@ class SockPuppetsServer:
             'started_at': datetime.now().isoformat()
         }
         logger.info(f"HTTPS listener started on {host}:{port}")
+        self.events.emit({"event": "listener_started", "listener_type": "https", "host": host, "port": port})
 
     async def stop_listener(self, listener_type: Optional[str] = None):
         """Stop listener(s). If type is None, stop all."""
@@ -1995,6 +1999,7 @@ class SockPuppetsServer:
             agent_id = data['agent_id']
             agent = self.agents[agent_id]
             agent.last_seen = datetime.now()
+            self.events.emit({"event": "agent_checkin", "agent_id": agent_id, "transport": transport})
             for result in data.get('results') or []:
                 agent.pending_results.append({
                     'command': result.get('command', ''),
@@ -2042,6 +2047,7 @@ class SockPuppetsServer:
         server.start()
         self.listeners[name] = {'type': 'dns', 'host': host, 'port': port, 'server': server, 'started_at': datetime.now().isoformat()}
         logger.info(f"DNS listener started on {host}:{port}")
+        self.events.emit({"event": "listener_started", "listener_type": "dns", "host": host, "port": port})
 
     async def start_smb_listener(self, host: str = '0.0.0.0', port: int = 4455):
         from transports.smb import SMBServer
@@ -2052,6 +2058,7 @@ class SockPuppetsServer:
         server.start()
         self.listeners[name] = {'type': 'smb', 'host': host, 'port': port, 'server': server, 'started_at': datetime.now().isoformat()}
         logger.info(f"SMB listener started on {host}:{port}")
+        self.events.emit({"event": "listener_started", "listener_type": "smb", "host": host, "port": port})
 
 
 # Global server instance

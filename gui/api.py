@@ -100,6 +100,11 @@ class GenerateRequest(BaseModel):
     shellcode_format: str = "raw"
     lang: str = "go"
 
+class ListenerRequest(BaseModel):
+    type: str
+    host: str = "0.0.0.0"
+    port: int
+
 class BOFRequest(BaseModel):
     bof_data: str
     args: str = ""
@@ -119,6 +124,33 @@ async def server_status():
         "port": getattr(_server, 'port', 0),
         "agent_count": len(_server.agents) if _server else 0,
     }
+
+
+@router.get("/listeners")
+async def list_listeners():
+    if not _server:
+        return []
+    return _server.get_listeners()
+
+
+@router.post("/listeners")
+async def start_listener(req: ListenerRequest):
+    if not _server:
+        raise HTTPException(503, "Server not ready")
+    kind = req.type.lower()
+    if kind in ("ws", "websocket"):
+        await _server.start_ws_listener(req.host, req.port)
+    elif kind == "http":
+        await _server.start_http_listener(req.host, req.port)
+    elif kind == "https":
+        await _server.start_https_listener(req.host, req.port)
+    elif kind == "dns":
+        await _server.start_dns_listener(req.host, req.port)
+    elif kind == "smb":
+        await _server.start_smb_listener(req.host, req.port)
+    else:
+        raise HTTPException(400, "Unknown listener type")
+    return {"status": "ok", "listeners": _server.get_listeners()}
 
 
 # --- Agents ---
@@ -275,6 +307,8 @@ async def generate_agents(req: GenerateRequest):
     if generated_keys and _server:
         for k in generated_keys:
             _server.add_encryption_key(k)
+    if _server:
+        _server.events.emit({"event": "beacon_generated", "lang": req.lang, "path": str(results)})
     return {"agents": results}
 
 

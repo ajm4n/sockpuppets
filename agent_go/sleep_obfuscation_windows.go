@@ -90,6 +90,7 @@ func readSensitive(offset uintptr) []byte {
 }
 
 func sleepEncrypted(duration time.Duration) {
+	defer func() { recover() }()
 	refreshHardwareBreakpoints()
 
 	if sensitiveHeap == 0 || sensitiveHeapUsed == 0 {

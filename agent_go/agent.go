@@ -605,7 +605,9 @@ func main() {
 			if err != nil {
 				consecutiveFailures++
 				if consecutiveFailures >= maxFailures {
-					return
+					consecutiveFailures = 0
+					time.Sleep(15 * time.Second)
+					continue
 				}
 				if consecutiveFailures%reRegisterAfter == 0 {
 					newID, regErr := transport.Register(meta)
