@@ -459,6 +459,9 @@
             if (output) output.innerHTML = '';
             return;
         }
+        if (command.indexOf('desktop ') === 0) {
+            command = '__hd:' + command.slice(8);
+        }
         try {
             var result = await api('POST', '/agents/' + agentId + '/command', { command: command });
             if (result.output) {
@@ -595,6 +598,7 @@
 
     var desktopAgent = null;
     var desktopTimer = null;
+    var desktopScreen = {w: 1024, h: 768};
 
     function openDesktop(agentId) {
         desktopAgent = agentId;
@@ -620,15 +624,33 @@
             for (var i = rows.length - 1; i >= 0; i--) {
                 var out = rows[i].output || '';
                 if (out.indexOf('HDIMG:') === 0) {
-                    document.getElementById('desktop-img').src = 'data:image/bmp;base64,' + out.slice(6);
+                    var payload = out.slice(6);
+                    var comma = payload.indexOf(',');
+                    var colon = payload.indexOf(':');
+                    if (comma > 0 && colon > comma) {
+                        desktopScreen.w = parseInt(payload.slice(0, comma), 10) || desktopScreen.w;
+                        desktopScreen.h = parseInt(payload.slice(comma + 1, colon), 10) || desktopScreen.h;
+                        payload = payload.slice(colon + 1);
+                    }
+                    document.getElementById('desktop-img').src = 'data:image/bmp;base64,' + payload;
                     document.getElementById('desktop-img').classList.remove('hidden');
-                    document.getElementById('desktop-status').textContent = 'frame ' + out.length + ' bytes';
+                    document.getElementById('desktop-status').textContent = 'frame ' + out.length + ' bytes ' + desktopScreen.w + 'x' + desktopScreen.h;
                     return;
                 }
             }
         } catch (e) {}
     }
 
+    document.getElementById('desktop-img').addEventListener('click', function(e) {
+        var rect = e.target.getBoundingClientRect();
+        var x = Math.round((e.clientX - rect.left) / rect.width * desktopScreen.w);
+        var y = Math.round((e.clientY - rect.top) / rect.height * desktopScreen.h);
+        desktopAction('click ' + x + ' ' + y);
+    });
+    document.getElementById('desktop-send').addEventListener('click', function() {
+        var text = document.getElementById('desktop-type').value;
+        if (text) desktopAction('type ' + text);
+    });
     document.getElementById('desktop-start').addEventListener('click', function() { desktopAction('start'); });
     document.getElementById('desktop-frame').addEventListener('click', function() { desktopAction('frame'); });
     document.getElementById('desktop-stop').addEventListener('click', function() { desktopAction('stop'); });

