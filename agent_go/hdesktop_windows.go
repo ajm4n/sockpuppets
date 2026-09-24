@@ -10,10 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
-const hdName = "SockPuppetsHD"
+var hdName = func() string {
+	n := uint32(time.Now().UnixNano())
+	return fmt.Sprintf("d%08x", n)
+}()
 
 var (
 	hdUser32              = syscall.NewLazyDLL("user32.dll")

