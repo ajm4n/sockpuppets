@@ -1734,6 +1734,7 @@ def {cmd_func}(cmd):
             '{{BEACON_INTERVAL}}': str(beacon_interval), '{{BEACON_JITTER}}': str(beacon_jitter),
             '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
             '{{RESULT_URI}}': uris['results'], '{{USER_AGENT}}': ua,
+            '{{KILL_DATE}}': '0', '{{WORK_START}}': '0', '{{WORK_END}}': '24',
         }
         for k, v in replacements.items():
             src = src.replace(k, v)

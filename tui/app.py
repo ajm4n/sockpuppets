@@ -111,6 +111,17 @@ class SockPuppetsTUI(App):
                 return
             if command.startswith("desktop "):
                 command = "__hd:" + command[8:]
+            elif command.startswith("ls "):
+                command = "__fs:ls:" + command[3:]
+            elif command.startswith("get "):
+                command = "__fs:get:" + command[4:]
+            elif command.startswith("put "):
+                parts = command.split(" ", 2)
+                if len(parts) == 3:
+                    import base64
+                    from pathlib import Path
+                    data = base64.b64encode(Path(parts[1]).read_bytes()).decode()
+                    command = "__fs:put:" + parts[2] + "\t" + data
             event.input.value = ""
 
             if agent_id in self.console_tabs:

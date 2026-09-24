@@ -1,5 +1,10 @@
 function Invoke-HiddenDesktop {
     param([string]$Command)
+    $sid = 0
+    try { $sid = [Win32.HdHop]::Session() } catch { $sid = 0 }
+    if ($env:SP_HD_HOST -ne '1' -and $sid -eq 0 -and (Test-Path 'C:\Users\Public\hd_hop.ps1')) {
+        return & powershell -NoProfile -ExecutionPolicy Bypass -File 'C:\Users\Public\hd_hop.ps1'
+    }
     if (-not ("Win32.Hd" -as [type])) {
         Add-Type -TypeDefinition @'
 using System;

