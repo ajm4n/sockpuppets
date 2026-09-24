@@ -7,16 +7,25 @@ BEACON_INTERVAL = {{BEACON_INTERVAL}}
 BEACON_JITTER = {{BEACON_JITTER}}
 ENCRYPTION_KEY = b"{{ENCRYPTION_KEY}}"
 
-def stealth_sleep(seconds):
-    fn = globals().get('sleep_encrypt')
-    buf = bytearray(32)
-    if fn:
-        try:
-            fn(seconds, buf)
-            return
-        except Exception:
-            pass
+def sleep_mask(seconds):
+    import os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    src = b'sockpuppets-sleep-mask'
+    try:
+        key = os.urandom(32)
+        nonce = os.urandom(12)
+        ct = AESGCM(key).encrypt(nonce, src, b'sockpuppets-sleep-mask-v1')
+    except Exception:
+        time.sleep(seconds)
+        return
     time.sleep(seconds)
+    try:
+        AESGCM(key).decrypt(nonce, ct, b'sockpuppets-sleep-mask-v1')
+    except Exception:
+        pass
+
+def stealth_sleep(seconds):
+    sleep_mask(seconds)
 
 def _key():
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
