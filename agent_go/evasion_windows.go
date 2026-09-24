@@ -161,6 +161,21 @@ func setBreakpointCurrentThread() bool {
 	return ret == 0
 }
 
+func clearDebugRegisters() {
+	pGetCurrentThread := kernel32.NewProc("GetCurrentThread")
+	thread, _, _ := pGetCurrentThread.Call()
+	var ctx CONTEXT
+	ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS
+	pGetCtx := ntdll.NewProc("NtGetContextThread")
+	if ret, _, _ := pGetCtx.Call(thread, uintptr(unsafe.Pointer(&ctx))); ret != 0 {
+		return
+	}
+	ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3 = 0, 0, 0, 0
+	ctx.Dr6, ctx.Dr7 = 0, 0
+	pSetCtx := ntdll.NewProc("NtSetContextThread")
+	pSetCtx.Call(thread, uintptr(unsafe.Pointer(&ctx)))
+}
+
 func refreshHardwareBreakpoints() {
 	if len(hwbpBreakpoints) > 0 {
 		setBreakpointCurrentThread()
@@ -204,7 +219,8 @@ func hwbpHandler(info *EXCEPTION_POINTERS) uintptr {
 		info.ContextRecord.Rsp += 8
 		return 0xFFFFFFFF
 	}
-	return 0
+	info.ContextRecord.EFlags |= 0x10000
+	return 0xFFFFFFFF
 }
 
 // CONTEXT for amd64 — debug registers
