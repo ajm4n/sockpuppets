@@ -52,6 +52,11 @@
         </section>
         <!-- Agent table -->
         <section id="main-panel">
+            <div id="agent-filter-bar">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter="beacon">Beacons</button>
+                <button class="filter-btn" data-filter="streaming">Streamers</button>
+            </div>
             <div id="agent-table-wrapper" class="glass">
                 <table id="agent-table">
                     <thead>
@@ -97,7 +102,9 @@
         <hr>
         <button data-action="upgrade">Upgrade to Streaming</button>
         <button data-action="downgrade">Downgrade to Beacon</button>
+        <button data-action="upgrade_ws">Upgrade to WebSocket</button>
         <hr>
+        <button data-action="remove">Remove Agent</button>
         <button data-action="kill" class="danger">Kill Agent</button>
     </div>
 
@@ -136,6 +143,10 @@
                         <select name="lang">
                             <option value="go">Go (compiled)</option>
                             <option value="python">Python</option>
+                            <option value="rust">Rust (compiled)</option>
+                            <option value="csharp">C# (.NET)</option>
+                            <option value="c">C (MinGW)</option>
+                            <option value="powershell">PowerShell</option>
                             <option value="all">All</option>
                         </select>
                         <label>Format</label>
@@ -174,6 +185,17 @@
                         </select>
                     </div>
                 </fieldset>
+                <fieldset class="evasion-toggles">
+                    <legend>Advanced</legend>
+                    <label><input type="checkbox" name="stego"> Steganography</label>
+                    <label><input type="checkbox" name="env_keying_check"> Environmental Keying</label>
+                    <div class="form-row hidden" id="env-keying-row">
+                        <label>Key Expression</label>
+                        <input type="text" name="env_keying" placeholder="hostname==WORKSTATION1">
+                    </div>
+                    <label><input type="checkbox" name="staged"> Staged Delivery</label>
+                    <label><input type="checkbox" name="compile"> Compile (PyInstaller)</label>
+                </fieldset>
                 <div class="form-actions">
                     <button type="submit" class="glass-btn primary">Generate</button>
                     <button type="button" class="glass-btn" id="generate-cancel">Cancel</button>
@@ -183,7 +205,77 @@
         </div>
     </div>
 
-    <input type="file" id="bof-file" class="hidden">
-    <script src="app.js?v=term1"></script>
+
+
+    <!-- BOF Modal -->
+    <div id="bof-modal" class="modal-overlay hidden">
+        <div class="modal glass" style="width:480px">
+            <h2>Run BOF</h2>
+            <div class="form-row">
+                <label>BOF File</label>
+                <div style="flex:1;display:flex;gap:8px;align-items:center">
+                    <button type="button" class="glass-btn" id="bof-pick-btn">Choose .o file</button>
+                    <span id="bof-file-name" style="font-size:12px;color:var(--text-muted)">No file selected</span>
+                    <input type="file" id="bof-pick" accept=".o,.obj,.bin" hidden>
+                </div>
+            </div>
+            <div class="form-row">
+                <label>Entry Point</label>
+                <input type="text" id="bof-entry" value="go" placeholder="go">
+            </div>
+            <div class="form-row">
+                <label>Arguments</label>
+                <input type="text" id="bof-args" placeholder="arg1 arg2 ...">
+            </div>
+            <div class="form-actions">
+                <button type="button" class="glass-btn primary" id="bof-run-btn" disabled>Execute</button>
+                <button type="button" class="glass-btn" id="bof-cancel-btn">Cancel</button>
+            </div>
+            <div id="bof-status" style="margin-top:12px;font-size:12px;color:var(--text-muted)" class="hidden"></div>
+        </div>
+    </div>
+
+    <!-- Upload Modal -->
+    <div id="upload-modal" class="modal-overlay hidden">
+        <div class="modal glass" style="width:480px">
+            <h2>Upload File</h2>
+            <div class="form-row">
+                <label>Local File</label>
+                <div style="flex:1;display:flex;gap:8px;align-items:center">
+                    <button type="button" class="glass-btn" id="upload-pick-btn">Choose file</button>
+                    <span id="upload-file-info" style="font-size:12px;color:var(--text-muted)">No file selected</span>
+                    <input type="file" id="upload-pick" hidden>
+                </div>
+            </div>
+            <div class="form-row">
+                <label>Remote Path</label>
+                <input type="text" id="upload-remote-path" placeholder="C:\Users\Public\file.exe">
+            </div>
+            <div id="upload-size-warn" class="hidden" style="color:var(--amber);font-size:12px;padding:4px 8px;margin-bottom:8px">File exceeds 2MB limit</div>
+            <div class="form-actions">
+                <button type="button" class="glass-btn primary" id="upload-go-btn" disabled>Upload</button>
+                <button type="button" class="glass-btn" id="upload-cancel-btn">Cancel</button>
+            </div>
+            <div id="upload-status" style="margin-top:12px;font-size:12px;color:var(--text-muted)" class="hidden"></div>
+        </div>
+    </div>
+
+    <!-- Download Modal -->
+    <div id="download-modal" class="modal-overlay hidden">
+        <div class="modal glass" style="width:480px">
+            <h2>Download File</h2>
+            <div class="form-row">
+                <label>Remote Path</label>
+                <input type="text" id="download-remote-path" placeholder="C:\Users\localuser\Desktop\file.txt">
+            </div>
+            <div class="form-actions">
+                <button type="button" class="glass-btn primary" id="download-go-btn">Download</button>
+                <button type="button" class="glass-btn" id="download-cancel-btn">Cancel</button>
+            </div>
+            <div id="download-status" style="margin-top:12px;font-size:12px" class="hidden"></div>
+        </div>
+    </div>
+
+    <script src="app.js?v=bof2"></script>
 </body>
 </html>

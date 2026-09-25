@@ -93,6 +93,14 @@ def execute_command(command: str) -> str:
             directory = command[3:].strip()
             os.chdir(directory)
             return f"Changed directory to {os.getcwd()}"
+        if command in ('pwd',):
+            return os.getcwd()
+        if command in ('ls', 'dir') or command.startswith('ls ') or command.startswith('dir '):
+            return _native_ls(command)
+        if command.startswith('cat ') or command.startswith('type '):
+            path = command.split(' ', 1)[1].strip()
+            with open(path, 'r', errors='replace') as f:
+                return f.read()
 
         if sys.platform == 'win32':
             return _execute_windows(command)
@@ -101,6 +109,26 @@ def execute_command(command: str) -> str:
 
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def _native_ls(command: str) -> str:
+    parts = command.split(' ', 1)
+    path = parts[1].strip() if len(parts) > 1 else '.'
+    if not path:
+        path = '.'
+    try:
+        entries = []
+        for name in os.listdir(path):
+            full = os.path.join(path, name)
+            try:
+                st = os.stat(full)
+                prefix = 'd' if os.path.isdir(full) else '-'
+                entries.append(f"{prefix} {st.st_size:>12}  {name}")
+            except OSError:
+                entries.append(f"? {'?':>12}  {name}")
+        return '\n'.join(entries) if entries else 'Directory is empty'
+    except Exception as e:
+        return f"Error: {e}"
 
 
 def _execute_windows(command: str) -> str:

