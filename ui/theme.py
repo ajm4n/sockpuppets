@@ -65,6 +65,7 @@ def print_agents_table(agents, active_ids):
     table.add_column("Hostname")
     table.add_column("Username")
     table.add_column("OS")
+    table.add_column("IP", overflow="fold")
     table.add_column("Transport", justify="center")
     table.add_column("Mode", justify="center")
     table.add_column("Last Seen")
@@ -78,6 +79,9 @@ def print_agents_table(agents, active_ids):
         }.get(transport, 'dim')
         mode = agent['mode'].upper()
         mode_style = 'agent.beacon' if mode == 'BEACON' else 'agent.stream'
+        seen = str(agent['last_seen'])
+        if agent.get('warning'):
+            seen = f"{seen} {agent['warning']}"
 
         table.add_row(
             status,
@@ -85,12 +89,16 @@ def print_agents_table(agents, active_ids):
             agent['hostname'],
             agent['username'],
             agent['os'],
+            agent.get('ip', ''),
             f"[{transport_style}]{transport}[/]",
             f"[{mode_style}]{mode}[/]",
-            agent['last_seen'],
+            seen,
         )
 
+    width = console.width
+    console.width = max(width, 200)
     console.print(table)
+    console.width = width
 
 
 def print_listeners_table(listeners):
@@ -132,8 +140,10 @@ def print_help_panel():
         ],
         "Agents": [
             ("agents / puppets", "List connected agents"),
+            ("beacons", "List beacon-mode agents"),
             ("interact <id>", "Interact with agent"),
             ("remove <id>", "Remove dead agent"),
+            ("upgrade_ws", "Upgrade HTTP agent to WebSocket"),
         ],
         "Generate": [
             ("generate <host> <port> [opts]", "Generate agent payloads"),
@@ -211,7 +221,8 @@ def print_interact_banner(agent_id, agent_info):
         "[bold]kill[/bold] — terminate agent",
         "[bold]sleep N[/bold] — set interval",
         "[bold]upgrade[/bold] — switch to streaming",
-        "[bold]socks PORT[/bold] — SOCKS proxy",
+        "[bold]upgrade_ws[/bold] — HTTP beacon to WebSocket",
+        "[bold]socks[/bold] — SOCKS proxy",
     ]
     console.print(f"  [dim]Commands: {' | '.join(cmds)}[/dim]")
 

