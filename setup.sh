@@ -149,11 +149,12 @@ install_python_deps() {
         return 0
     fi
 
+    # Create or validate venv
     if [ ! -d ".venv" ]; then
         python3 -m venv .venv 2>>"$LOG_FILE"
         if [ $? -ne 0 ]; then
             fail "Failed to create virtual environment"
-            info "On Debian/Ubuntu: sudo apt install python3-venv"
+            info "On Debian/Ubuntu: sudo apt install python3-venv python3-dev"
             return 1
         fi
         ok "Virtual environment created"
@@ -161,30 +162,41 @@ install_python_deps() {
         ok "Virtual environment exists"
     fi
 
-    # Activate and install
-    source .venv/bin/activate 2>/dev/null
-    if [ $? -ne 0 ]; then
-        fail "Failed to activate virtual environment"
-        return 1
+    # Validate venv has a working python and pip
+    local VPYTHON=".venv/bin/python3"
+    local VPIP=".venv/bin/pip"
+    if [ ! -x "$VPYTHON" ]; then
+        warn "Broken venv (no python3 binary) — recreating"
+        rm -rf .venv
+        python3 -m venv .venv 2>>"$LOG_FILE"
+        if [ ! -x "$VPYTHON" ]; then
+            fail "Cannot create working virtual environment"
+            info "On Debian/Ubuntu: sudo apt install python3-venv python3-dev"
+            return 1
+        fi
+        ok "Virtual environment recreated"
     fi
-    ok "Activated .venv"
+
+    if [ ! -x "$VPIP" ]; then
+        $VPYTHON -m ensurepip --upgrade >>"$LOG_FILE" 2>&1
+    fi
 
     # Upgrade pip first
-    pip install --quiet --upgrade pip >>"$LOG_FILE" 2>&1
+    $VPYTHON -m pip install --quiet --upgrade pip >>"$LOG_FILE" 2>&1
 
     # Core deps
-    if pip install -r requirements.txt >>"$LOG_FILE" 2>&1; then
+    if $VPIP install -r requirements.txt >>"$LOG_FILE" 2>&1; then
         ok "Core packages: websockets, aiohttp, cryptography, pyyaml, rich, pyinstaller"
     else
         fail "Failed to install core requirements"
         info "Check setup.log for details"
-        info "Try: source .venv/bin/activate && pip install -r requirements.txt"
+        info "Try: .venv/bin/pip install -r requirements.txt"
         return 1
     fi
 
     # GUI deps
     if [ -f requirements-gui.txt ]; then
-        if pip install -r requirements-gui.txt >>"$LOG_FILE" 2>&1; then
+        if $VPIP install -r requirements-gui.txt >>"$LOG_FILE" 2>&1; then
             ok "GUI packages: fastapi, uvicorn, pydantic"
         else
             warn "Failed to install GUI requirements (GUI will be unavailable)"
@@ -193,7 +205,7 @@ install_python_deps() {
 
     # TUI deps
     if [ -f requirements-tui.txt ]; then
-        if pip install -r requirements-tui.txt >>"$LOG_FILE" 2>&1; then
+        if $VPIP install -r requirements-tui.txt >>"$LOG_FILE" 2>&1; then
             ok "TUI packages: textual"
         else
             warn "Failed to install TUI requirements (TUI will be unavailable)"
@@ -290,11 +302,8 @@ install_rust() {
         return 1
     fi
 
-    if $CI_MODE; then
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable >>"$LOG_FILE" 2>&1
-    else
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain stable >>"$LOG_FILE" 2>&1
-    fi
+    # Always pass -y — we're in a script, interactive prompts will fail
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable >>"$LOG_FILE" 2>&1
 
     if [ -f "$HOME/.cargo/env" ]; then
         source "$HOME/.cargo/env"
@@ -326,7 +335,17 @@ install_dotnet() {
 
     case "$os_type" in
         macos)  pkg_install macos dotnet ;;
-        debian) pkg_install debian dotnet-sdk-8.0 ;;
+        debian)
+            # Try versioned names (varies by Ubuntu/Debian release)
+            pkg_install debian dotnet-sdk-9.0 2>/dev/null || \
+            pkg_install debian dotnet-sdk-8.0 2>/dev/null || \
+            pkg_install debian dotnet9 2>/dev/null || \
+            pkg_install debian dotnet8 2>/dev/null || {
+                warn ".NET not in apt repos — install via https://dot.net/download"
+                info "Or: wget https://dot.net/v1/dotnet-install.sh && bash dotnet-install.sh"
+                return 1
+            }
+            ;;
         rhel)   pkg_install rhel dotnet-sdk-8.0 ;;
         arch)   pkg_install arch dotnet-sdk ;;
         *)      warn "Install .NET manually: https://dot.net/download"; return 1 ;;
@@ -461,6 +480,47 @@ with open('keys/server_x25519.bin', 'wb') as f:
     warn "Could not generate X25519 key — crypto handshake will fail"
     info "Install Python cryptography package first, then re-run"
     return 1
+}
+
+install_cli() {
+    section "CLI Command"
+    local target="/usr/local/bin/sockpuppets"
+    local source="$SCRIPT_DIR/bin/sockpuppets"
+
+    if [ ! -f "$source" ]; then
+        fail "bin/sockpuppets not found in repo"
+        return 1
+    fi
+
+    if [ -L "$target" ] || [ -f "$target" ]; then
+        local existing; existing=$(readlink -f "$target" 2>/dev/null || echo "$target")
+        if [ "$existing" = "$source" ]; then
+            ok "sockpuppets command already installed"
+            return 0
+        fi
+    fi
+
+    if $CHECK_ONLY; then
+        if cmd_exists sockpuppets; then
+            ok "sockpuppets command available"
+        else
+            warn "sockpuppets command not installed"
+        fi
+        return 0
+    fi
+
+    if [ -w "/usr/local/bin" ] || [ "$(id -u)" -eq 0 ]; then
+        ln -sf "$source" "$target"
+    else
+        sudo ln -sf "$source" "$target" 2>>"$LOG_FILE"
+    fi
+
+    if [ $? -eq 0 ] && [ -L "$target" ]; then
+        chmod +x "$source"
+        ok "Installed: sockpuppets → $source"
+    else
+        warn "Could not install to /usr/local/bin (try: sudo ln -sf $source $target)"
+    fi
 }
 
 smoke_test() {
@@ -598,6 +658,7 @@ case "$ACTION" in
         install_mingw
         generate_certs
         generate_keys
+        install_cli
         smoke_test
         ;;
 esac
@@ -631,6 +692,9 @@ cmd_exists x86_64-w64-mingw32-gcc \
 [ -f "keys/server_x25519.bin" ] \
                    && echo -e "  X25519 Key:  ${GREEN}✓${NC}" \
                    || echo -e "  X25519 Key:  ${RED}✗${NC}"
+cmd_exists sockpuppets \
+                   && echo -e "  CLI Command: ${GREEN}✓${NC} $(which sockpuppets 2>/dev/null)" \
+                   || echo -e "  CLI Command: ${RED}✗${NC}"
 
 echo ""
 if [ $ERRORS -gt 0 ]; then
@@ -644,12 +708,20 @@ fi
 
 if ! $CHECK_ONLY; then
     echo ""
-    echo "Activate the environment:"
-    echo -e "  ${CYAN}source .venv/bin/activate${NC}"
-    echo ""
-    echo "Run:"
-    echo -e "  ${CYAN}python main.py${NC}            # CLI"
-    echo -e "  ${CYAN}python main.py --gui${NC}      # Web GUI on :13337"
-    echo -e "  ${CYAN}python main.py --tui${NC}      # Terminal UI"
+    if cmd_exists sockpuppets; then
+        echo "Run:"
+        echo -e "  ${CYAN}sockpuppets${NC}               # Interactive CLI"
+        echo -e "  ${CYAN}sockpuppets tui${NC}           # Terminal UI"
+        echo -e "  ${CYAN}sockpuppets gui${NC}           # Web GUI on :13337"
+        echo -e "  ${CYAN}sockpuppets help${NC}          # All commands"
+    else
+        echo "Activate the environment:"
+        echo -e "  ${CYAN}source .venv/bin/activate${NC}"
+        echo ""
+        echo "Run:"
+        echo -e "  ${CYAN}python main.py${NC}            # CLI"
+        echo -e "  ${CYAN}python main.py --gui${NC}      # Web GUI on :13337"
+        echo -e "  ${CYAN}python main.py --tui${NC}      # Terminal UI"
+    fi
 fi
 echo ""

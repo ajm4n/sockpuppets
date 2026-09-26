@@ -1,0 +1,94 @@
+#!/bin/bash
+# SockPuppets C2 — CLI entry point
+# Installed to /usr/local/bin by setup.sh
+
+set -e
+
+INSTALL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")/.." && pwd)"
+VENV="$INSTALL_DIR/.venv"
+
+if [ ! -d "$VENV" ]; then
+    echo "[-] Virtual environment not found at $VENV"
+    echo "    Run: cd $INSTALL_DIR && ./setup.sh --python"
+    exit 1
+fi
+
+PYTHON="$VENV/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+    echo "[-] Python not found in venv"
+    echo "    Run: cd $INSTALL_DIR && ./setup.sh --python"
+    exit 1
+fi
+
+show_help() {
+    echo "SockPuppets C2 Framework"
+    echo ""
+    echo "Usage: sockpuppets <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  cli              Interactive CLI (default)"
+    echo "  tui              Terminal UI (Textual)"
+    echo "  gui [port]       Web GUI (default port: 13337)"
+    echo "  setup [flags]    Run setup.sh (pass --check, --python, etc.)"
+    echo "  server           Start server only (no UI)"
+    echo "  generate         Generate payloads (interactive)"
+    echo "  version          Show version info"
+    echo "  help             Show this help"
+}
+
+case "${1:-cli}" in
+    cli)
+        exec "$PYTHON" "$INSTALL_DIR/main.py"
+        ;;
+    tui)
+        exec "$PYTHON" "$INSTALL_DIR/main.py" --tui
+        ;;
+    gui)
+        port="${2:-13337}"
+        exec "$PYTHON" "$INSTALL_DIR/main.py" --gui "$port"
+        ;;
+    setup)
+        shift
+        exec bash "$INSTALL_DIR/setup.sh" "$@"
+        ;;
+    server)
+        exec "$PYTHON" -c "
+import asyncio
+from server import SockPuppetsServer
+server = SockPuppetsServer()
+print('[*] SockPuppets server running. Ctrl+C to stop.')
+try:
+    asyncio.get_event_loop().run_forever()
+except KeyboardInterrupt:
+    print('\n[*] Stopped.')
+"
+        ;;
+    generate)
+        exec "$PYTHON" -c "
+from agent import AgentGenerator
+import sys
+gen = AgentGenerator()
+print('SockPuppets Payload Generator')
+print('Available: python, go, rust, csharp, c')
+lang = input('Language [python]: ').strip() or 'python'
+host = input('C2 host: ').strip()
+port = input('C2 port [443]: ').strip() or '443'
+result = gen.generate_all(c2_host=host, c2_port=int(port))
+for name, path in result.items():
+    print(f'  [+] {name}: {path}')
+"
+        ;;
+    version|-v|--version)
+        echo "SockPuppets C2"
+        echo "Install: $INSTALL_DIR"
+        "$PYTHON" --version 2>&1
+        ;;
+    help|-h|--help)
+        show_help
+        ;;
+    *)
+        echo "Unknown command: $1"
+        show_help
+        exit 1
+        ;;
+esac
