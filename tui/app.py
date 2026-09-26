@@ -105,6 +105,7 @@ class SockPuppetsTUI(App):
             self.console_tabs[agent_id] = panel
 
         self.query_one("#bottom-panel", TabbedContent).active = f"tab-console-{agent_id}"
+        self.set_timer(0.1, lambda: self.console_tabs[agent_id].query_one(Input).focus())
 
     def on_input_submitted(self, event: Input.Submitted):
         input_id = event.input.id or ""

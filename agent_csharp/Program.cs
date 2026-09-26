@@ -186,19 +186,27 @@ namespace SvcHealth
         [DllImport("kernel32.dll")] static extern bool ReadFile(IntPtr h, byte[] buf, int toRead, out int read, IntPtr ovl);
         [DllImport("kernel32.dll", EntryPoint = "CloseHandle")] static extern bool CloseH(IntPtr h);
         [DllImport("kernel32.dll")] static extern int WaitForSingleObject(IntPtr h, int ms);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, int flags, IntPtr env, string dir, ref SI si, out PI pi);
 
         static string RunShell(string cmd)
         {
             var sa = new SECURITY_ATTRIBUTES { nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)), bInheritHandle = true };
-            IntPtr outR, outW, errR, errW;
+            IntPtr outR, outW, errR, errW, inR, inW;
             CreatePipe(out outR, out outW, ref sa, 0);
             SetHandleInformation(outR, 1, 0);
             CreatePipe(out errR, out errW, ref sa, 0);
             SetHandleInformation(errR, 1, 0);
-            var si = new SI { cb = Marshal.SizeOf(typeof(SI)), dwFlags = 0x100, wSW = 0, hStdOutput = outW, hStdError = errW };
+            CreatePipe(out inR, out inW, ref sa, 0);
+            SetHandleInformation(inW, 1, 0);
+            var si = new SI { cb = Marshal.SizeOf(typeof(SI)), dwFlags = 0x100, wSW = 0, hStdInput = inR, hStdOutput = outW, hStdError = errW };
             var shell = Environment.GetFolderPath(Environment.SpecialFolder.System) + "\\cmd.exe";
             PI pi;
-            if (!CpW()(shell, shell + " /C " + cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, null, ref si, out pi))
+            var cpw = CpW();
+            bool ok = cpw != null ? cpw(shell, shell + " /C " + cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, null, ref si, out pi)
+                                  : CreateProcessW(shell, shell + " /C " + cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, null, ref si, out pi);
+            CloseH(inR); CloseH(inW);
+            if (!ok)
                 return "exec failed";
             CloseH(outW);
             CloseH(errW);

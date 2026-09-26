@@ -47,11 +47,17 @@ class AgentTable(DataTable):
         return Text(f"{h}h {m}m ago", style="red")
 
     def update_agents(self, agents: list, active_ids: set):
-        self.clear()
+        existing_keys = {row.key.value for row in self.ordered_rows}
+        new_keys = {agent["id"] for agent in agents}
+        col_keys = [col.key for col in self.ordered_columns]
+
+        for key in existing_keys - new_keys:
+            self.remove_row(key)
+
         for agent in agents:
             health = Text("●", style="green") if agent["id"] in active_ids else Text("●", style="red")
             mode = Text("BEACON", style="yellow bold") if agent["mode"] == "beacon" else Text("STREAM", style="green bold")
-            self.add_row(
+            row_data = (
                 agent["id"],
                 agent.get("hostname", "Unknown"),
                 agent.get("username", "Unknown"),
@@ -61,8 +67,12 @@ class AgentTable(DataTable):
                 self._format_sleep(agent),
                 health,
                 self._format_ago(agent.get("last_seen", "")),
-                key=agent["id"],
             )
+            if agent["id"] in existing_keys:
+                for col_idx, val in enumerate(row_data):
+                    self.update_cell(agent["id"], col_keys[col_idx], val)
+            else:
+                self.add_row(*row_data, key=agent["id"])
 
 
 class ConsolePanel(Vertical):
@@ -144,4 +154,4 @@ class StatusBar(Static):
 
     def update_status(self, server_running: bool, agent_count: int, operators: int = 1):
         status = "[green]●[/green] Running" if server_running else "[red]●[/red] Stopped"
-        self.update(f" Server: {status}  |  Agents: {agent_count}  |  Operators: {operators}  |  [dim]F1:Help  F2:Generate  q:Quit[/dim]")
+        self.update(f" Server: {status}  |  Agents: {agent_count}  |  Operators: {operators}  |  [dim]F1:Help  F2:Generate  Ctrl+Q:Quit[/dim]")
