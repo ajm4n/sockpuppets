@@ -1548,13 +1548,19 @@ def main():
                         help='Start web GUI on PORT (default: 13337)')
     parser.add_argument('--tui', action='store_true',
                         help='Start Textual TUI instead of CLI')
+    parser.add_argument('--connect', type=str, metavar='HOST:PORT',
+                        help='Connect to a remote SockPuppets server')
     args = parser.parse_args()
 
     if args.tui:
         try:
             from tui import launch_tui
-            from server import SockPuppetsServer
-            server = SockPuppetsServer()
+            if args.connect:
+                from tui.remote import RemoteServer
+                server = RemoteServer(args.connect)
+            else:
+                from server import SockPuppetsServer
+                server = SockPuppetsServer()
             launch_tui(server)
         except ImportError:
             print("[-] TUI requires textual: pip install -r requirements-tui.txt")

@@ -57,7 +57,17 @@ class ServerIdentity:
     @classmethod
     def load(cls, path: Path = IDENTITY_PATH) -> 'ServerIdentity':
         if path.exists():
-            return cls(X25519PrivateKey.from_private_bytes(path.read_bytes()))
+            raw = path.read_bytes()
+            if len(raw) != 32:
+                from cryptography.hazmat.primitives.serialization import load_der_private_key
+                key = load_der_private_key(raw, password=None)
+                path.write_bytes(key.private_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PrivateFormat.Raw,
+                    serialization.NoEncryption(),
+                ))
+                return cls(key)
+            return cls(X25519PrivateKey.from_private_bytes(raw))
         ident = cls()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(ident.priv.private_bytes(

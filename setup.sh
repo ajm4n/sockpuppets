@@ -465,14 +465,22 @@ with open('keys/server_x25519.bin', 'wb') as f:
         fi
     fi
 
-    # Fallback: openssl
+    # Fallback: openssl rand (X25519 private keys are 32 random bytes)
     if cmd_exists openssl; then
-        openssl genpkey -algorithm X25519 -out keys/server_x25519.pem >>"$LOG_FILE" 2>&1
-        openssl pkey -in keys/server_x25519.pem -outform DER -out keys/server_x25519.bin >>"$LOG_FILE" 2>&1
-        rm -f keys/server_x25519.pem
+        openssl rand -out keys/server_x25519.bin 32 >>"$LOG_FILE" 2>&1
         if [ -f "keys/server_x25519.bin" ]; then
             chmod 600 keys/server_x25519.bin
             ok "Generated X25519 server key (via openssl)"
+            return 0
+        fi
+    fi
+
+    # Last resort: /dev/urandom
+    if [ -c /dev/urandom ]; then
+        dd if=/dev/urandom of=keys/server_x25519.bin bs=32 count=1 2>>"$LOG_FILE"
+        if [ -f "keys/server_x25519.bin" ]; then
+            chmod 600 keys/server_x25519.bin
+            ok "Generated X25519 server key (via /dev/urandom)"
             return 0
         fi
     fi

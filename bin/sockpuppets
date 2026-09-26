@@ -26,14 +26,34 @@ show_help() {
     echo "Usage: sockpuppets <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  cli              Interactive CLI (default)"
-    echo "  tui              Terminal UI (Textual)"
-    echo "  gui [port]       Web GUI (default port: 13337)"
-    echo "  setup [flags]    Run setup.sh (pass --check, --python, etc.)"
-    echo "  server           Start server only (no UI)"
-    echo "  generate         Generate payloads (interactive)"
-    echo "  version          Show version info"
-    echo "  help             Show this help"
+    echo "  cli                        Interactive CLI (default)"
+    echo "  tui [--connect HOST:PORT]  Terminal UI (Textual)"
+    echo "  gui [port] [--connect HOST:PORT]  Web GUI (default port: 13337)"
+    echo "  setup [flags]              Run setup.sh (pass --check, --python, etc.)"
+    echo "  server                     Start server only (no UI)"
+    echo "  generate                   Generate payloads (interactive)"
+    echo "  version                    Show version info"
+    echo "  help                       Show this help"
+    echo ""
+    echo "Remote connection:"
+    echo "  --connect HOST:PORT  Connect to a remote SockPuppets server"
+    echo "                       TUI: opens TUI against remote server API"
+    echo "                       GUI: opens browser to remote server GUI"
+}
+
+# Parse --connect from arguments (works for both tui and gui)
+parse_connect() {
+    local args=("$@")
+    for ((i=0; i<${#args[@]}; i++)); do
+        case "${args[i]}" in
+            --connect=*) echo "${args[i]#--connect=}"; return ;;
+            --connect)
+                if [ $((i+1)) -lt ${#args[@]} ]; then
+                    echo "${args[$((i+1))]}"; return
+                fi
+                ;;
+        esac
+    done
 }
 
 case "${1:-cli}" in
@@ -41,10 +61,38 @@ case "${1:-cli}" in
         exec "$PYTHON" "$INSTALL_DIR/main.py"
         ;;
     tui)
-        exec "$PYTHON" "$INSTALL_DIR/main.py" --tui
+        shift
+        connect=$(parse_connect "$@")
+        if [ -n "$connect" ]; then
+            exec "$PYTHON" "$INSTALL_DIR/main.py" --tui --connect "$connect"
+        else
+            exec "$PYTHON" "$INSTALL_DIR/main.py" --tui
+        fi
         ;;
     gui)
-        port="${2:-13337}"
+        shift
+        connect=$(parse_connect "$@")
+        if [ -n "$connect" ]; then
+            url="http://$connect"
+            echo "[*] Connecting to remote SockPuppets GUI: $url"
+            if command -v xdg-open &>/dev/null; then
+                xdg-open "$url" 2>/dev/null
+            elif command -v open &>/dev/null; then
+                open "$url" 2>/dev/null
+            elif command -v wslview &>/dev/null; then
+                wslview "$url" 2>/dev/null
+            else
+                echo "[+] Open in browser: $url"
+            fi
+            exit 0
+        fi
+        # Parse port from remaining args (first numeric arg)
+        port="13337"
+        for arg in "$@"; do
+            case "$arg" in
+                [0-9]*) port="$arg"; break ;;
+            esac
+        done
         exec "$PYTHON" "$INSTALL_DIR/main.py" --gui "$port"
         ;;
     setup)

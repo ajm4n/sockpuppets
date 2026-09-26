@@ -65,6 +65,8 @@ class SockPuppetsTUI(App):
         self.set_interval(1.0, self.refresh_agents)
         self.set_interval(0.5, self.poll_events)
         self.refresh_agents()
+        if hasattr(self.server, 'start_ws_events'):
+            asyncio.ensure_future(self.server.start_ws_events())
 
     def refresh_agents(self):
         table = self.query_one("#agent-table", AgentTable)
