@@ -55,7 +55,7 @@ class RemoteServer:
         import urllib.request
         import urllib.error
 
-        url = self.api_url + "/login"
+        url = self.api_url + "/auth/login"
         data = json.dumps({"username": self._username, "password": self._password}).encode()
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         try:
