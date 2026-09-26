@@ -21,7 +21,9 @@ class SockPuppetsTUI(App):
     #bottom-panel { height: 1fr; }
     AgentTable { height: 100%; }
     EventLogPanel { height: 100%; }
-    ConsolePanel { height: 100%; }
+    ConsolePanel { height: 1fr; }
+    ConsolePanel > RichLog { height: 1fr; }
+    ConsolePanel > Input { dock: bottom; margin-top: 1; }
     #status-bar { dock: bottom; height: 1; background: $surface; }
     .dialog-title { text-align: center; text-style: bold; padding: 1; }
     .label { width: 10; padding: 1; }
@@ -111,7 +113,15 @@ class SockPuppetsTUI(App):
             self.console_tabs[agent_id] = panel
 
         self.query_one("#bottom-panel", TabbedContent).active = f"tab-console-{agent_id}"
-        self.set_timer(0.1, lambda: self.console_tabs[agent_id].query_one(Input).focus())
+
+        def _focus_input():
+            try:
+                self.console_tabs[agent_id].query_one(Input).focus()
+            except Exception:
+                pass
+
+        self.set_timer(0.2, _focus_input)
+        self.set_timer(0.5, _focus_input)
 
     def on_input_submitted(self, event: Input.Submitted):
         input_id = event.input.id or ""
