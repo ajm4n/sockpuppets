@@ -159,11 +159,11 @@ class RemoteServer:
             self.api_url + path,
             headers=self._headers(),
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=2) as resp:
             return json.loads(resp.read())
 
     def get_active_agents(self):
-        agents = self.get_agent_list()
+        agents = self._agents_cache if self._agents_cache else self.get_agent_list()
         return [a for a in agents if a.get("active")]
 
     def get_listeners(self):

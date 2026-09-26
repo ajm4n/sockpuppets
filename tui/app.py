@@ -62,20 +62,26 @@ class SockPuppetsTUI(App):
 
     def on_mount(self):
         self.event_queue = self.server.events.subscribe()
-        self.set_interval(1.0, self.refresh_agents)
+        self.set_interval(3.0, self.refresh_agents)
         self.set_interval(0.5, self.poll_events)
         self.refresh_agents()
         if hasattr(self.server, 'start_ws_events'):
             asyncio.ensure_future(self.server.start_ws_events())
 
     def refresh_agents(self):
-        table = self.query_one("#agent-table", AgentTable)
-        agents = self.server.get_agent_list()
-        active_ids = {a["id"] for a in self.server.get_active_agents()}
-        table.update_agents(agents, active_ids)
+        focused = self.focused
+        if isinstance(focused, Input):
+            return
+        try:
+            table = self.query_one("#agent-table", AgentTable)
+            agents = self.server.get_agent_list()
+            active_ids = {a["id"] for a in self.server.get_active_agents()}
+            table.update_agents(agents, active_ids)
 
-        running = hasattr(self.server, "ws_server") and self.server.ws_server is not None
-        self.query_one("#status-bar", StatusBar).update_status(running, len(agents))
+            running = hasattr(self.server, "ws_server") and self.server.ws_server is not None
+            self.query_one("#status-bar", StatusBar).update_status(running, len(agents))
+        except Exception:
+            pass
 
     def poll_events(self):
         if not self.event_queue:
