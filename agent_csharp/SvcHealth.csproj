@@ -8,5 +8,9 @@
     <Company>Microsoft Corporation</Company>
     <Product>System Health Diagnostics</Product>
     <Version>3.2.1</Version>
+    <StartupObject>SvcHealth.Program</StartupObject>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="8.0.8" />
+  </ItemGroup>
 </Project>
