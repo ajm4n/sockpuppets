@@ -30,16 +30,16 @@ class SockPuppetsTUI(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit", show=True),
+        Binding("ctrl+q", "quit", "Quit", show=True),
         Binding("f1", "help", "Help"),
         Binding("f2", "generate", "Generate"),
         Binding("f5", "refresh", "Refresh"),
-        Binding("k", "kill_agent", "Kill"),
-        Binding("s", "sleep_agent", "Sleep"),
-        Binding("u", "upgrade_agent", "Upgrade"),
-        Binding("d", "downgrade_agent", "Downgrade"),
-        Binding("p", "socks_agent", "SOCKS"),
-        Binding("h", "desktop_agent", "Desktop"),
+        Binding("f6", "kill_agent", "Kill"),
+        Binding("f7", "sleep_agent", "Sleep"),
+        Binding("f8", "upgrade_agent", "Upgrade"),
+        Binding("f9", "downgrade_agent", "Downgrade"),
+        Binding("f10", "socks_agent", "SOCKS"),
+        Binding("f11", "desktop_agent", "Desktop"),
     ]
 
     def __init__(self, server, **kwargs):

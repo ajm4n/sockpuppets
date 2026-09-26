@@ -28,6 +28,19 @@ class RemoteEventBus:
                 pass
 
 
+class _RemoteAgentProxy:
+    """Lightweight proxy so CLI code can do agent.mode, agent.is_http(), etc."""
+    def __init__(self, data):
+        self.id = data.get("id", "")
+        self.hostname = data.get("hostname", "")
+        self.username = data.get("username", "")
+        self.mode = data.get("mode", "beacon")
+        self._transport = data.get("transport", "http")
+
+    def is_http(self):
+        return self._transport in ("http", "https")
+
+
 class RemoteServer:
     """Proxy that exposes the same interface as SockPuppetsServer
     but forwards calls to a remote instance's HTTP API."""
@@ -121,6 +134,11 @@ class RemoteServer:
         except Exception:
             pass
 
+    @property
+    def agents(self):
+        cache = self._agents_cache or self.get_agent_list()
+        return {a["id"]: _RemoteAgentProxy(a) for a in cache}
+
     def get_agent_list(self):
         try:
             result = self._sync_get("/agents")
@@ -128,6 +146,12 @@ class RemoteServer:
             return result
         except Exception:
             return self._agents_cache
+
+    def get_agent_results(self, agent_id, clear=False):
+        try:
+            return self._sync_get(f"/agents/{agent_id}/results")
+        except Exception:
+            return []
 
     def _sync_get(self, path):
         import urllib.request

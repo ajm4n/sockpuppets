@@ -58,7 +58,13 @@ parse_connect() {
 
 case "${1:-cli}" in
     cli)
-        exec "$PYTHON" "$INSTALL_DIR/main.py"
+        shift 2>/dev/null || true
+        connect=$(parse_connect "$@")
+        if [ -n "$connect" ]; then
+            exec "$PYTHON" "$INSTALL_DIR/main.py" --connect "$connect"
+        else
+            exec "$PYTHON" "$INSTALL_DIR/main.py"
+        fi
         ;;
     tui)
         shift

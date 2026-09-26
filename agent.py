@@ -1778,7 +1778,8 @@ def {cmd_func}(cmd):
         out_name = f"agent_{self.random_string(8)}_windows.exe"
         print(f"[*] Building C# agent for Windows x64 (framework-dependent)...")
         result = _sp.run(
-            ['dotnet', 'publish', '-r', 'win-x64', '-c', 'Release',
+            ['dotnet', 'publish', str(cs_src.parent / 'SvcHealth.csproj'),
+             '-r', 'win-x64', '-c', 'Release',
              '--self-contained', 'false', '-p:PublishSingleFile=true'],
             cwd=str(cs_src.parent), capture_output=True, text=True, timeout=120
         )

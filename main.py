@@ -46,9 +46,10 @@ class SockPuppetsCLI(cmd.Cmd):
             return ""
         return ASCII_ART + "\nType 'help' for available commands.\n"
 
-    def __init__(self):
+    def __init__(self, remote_server=None):
         super().__init__()
         self.server = None
+        self.remote = remote_server
         self.server_running = False
         self.current_agent = None
         self.loop = None
@@ -56,6 +57,20 @@ class SockPuppetsCLI(cmd.Cmd):
 
     def preloop(self):
         """Called before cmdloop starts -- handle deferred GUI start."""
+        if self.remote:
+            self.server = self.remote
+            self.server_running = True
+            ready = threading.Event()
+            def run_loop():
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+                ready.set()
+                self.loop.run_forever()
+            thread = threading.Thread(target=run_loop, daemon=True)
+            thread.start()
+            ready.wait(timeout=5.0)
+            print(f"[+] Connected to remote server")
+
         gui_port = getattr(self, '_start_gui_on_ready', None)
         if gui_port:
             self._ensure_server()
@@ -63,6 +78,10 @@ class SockPuppetsCLI(cmd.Cmd):
 
     def _ensure_server(self):
         """Ensure server instance exists and event loop is running"""
+        if self.remote:
+            self.server_running = True
+            return
+
         if self.server is None:
             self.server = SockPuppetsServer(self.encryption_key)
 
@@ -665,13 +684,11 @@ class SockPuppetsCLI(cmd.Cmd):
                     current_agent = self.server.agents.get(agent_id)
                     if current_agent and current_agent.mode == 'streaming':
                         print("[*] Executing command...")
-                        # HTTP long-poll needs more time
                         timeout = 65 if current_agent.is_http() else 35
                         result = future.result(timeout=timeout)
                         print(result)
                     else:
-                        # Beacon mode - just queue
-                        result = future.result(timeout=5)
+                        result = future.result(timeout=15)
                         print(result)
 
                 except KeyboardInterrupt:
@@ -1572,10 +1589,18 @@ def main():
         return
 
     try:
-        cli = SockPuppetsCLI()
+        remote = None
+        if args.connect:
+            from tui.remote import RemoteServer
+            try:
+                remote = RemoteServer(args.connect)
+            except (ConnectionError, OSError) as e:
+                print(f"[-] {e}")
+                sys.exit(1)
+
+        cli = SockPuppetsCLI(remote_server=remote)
 
         if args.gui is not None:
-            # Auto-start GUI if --gui flag was passed
             cli._start_gui_on_ready = args.gui
 
         cli.cmdloop()
