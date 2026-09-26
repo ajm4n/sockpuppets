@@ -76,6 +76,9 @@ class ConsolePanel(Vertical):
         yield RichLog(id=f"console-log-{self.agent_id}", wrap=True, markup=True)
         yield Input(placeholder=f"agent[{self.agent_id}]> ", id=f"console-input-{self.agent_id}")
 
+    def on_mount(self):
+        self.query_one(f"#console-input-{self.agent_id}", Input).focus()
+
     def append(self, text: str, style: str = ""):
         log = self.query_one(f"#console-log-{self.agent_id}", RichLog)
         if style:

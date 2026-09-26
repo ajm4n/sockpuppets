@@ -1,6 +1,8 @@
 """Main Textual application for SockPuppets TUI."""
 
 import asyncio
+import base64
+import os
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, Horizontal
@@ -118,10 +120,27 @@ class SockPuppetsTUI(App):
             elif command.startswith("put "):
                 parts = command.split(" ", 2)
                 if len(parts) == 3:
-                    import base64
                     from pathlib import Path
                     data = base64.b64encode(Path(parts[1]).read_bytes()).decode()
                     command = "__fs:put:" + parts[2] + "\t" + data
+            elif command.startswith("bof "):
+                event.input.value = ""
+                bof_parts = command.split(None, 1)
+                if len(bof_parts) < 2:
+                    if agent_id in self.console_tabs:
+                        self.console_tabs[agent_id].append("Usage: bof <path-to-.o> [type:value ...]", "red")
+                    return
+                bof_args_raw = bof_parts[1].split()
+                bof_path = bof_args_raw[0]
+                bof_cli_args = bof_args_raw[1:] if len(bof_args_raw) > 1 else []
+                if not os.path.exists(bof_path):
+                    if agent_id in self.console_tabs:
+                        self.console_tabs[agent_id].append(f"BOF file not found: {bof_path}", "red")
+                    return
+                if agent_id in self.console_tabs:
+                    self.console_tabs[agent_id].append(f"agent[{agent_id}]> bof {os.path.basename(bof_path)}", "bold cyan")
+                asyncio.ensure_future(self._send_bof(agent_id, bof_path, bof_cli_args))
+                return
             event.input.value = ""
 
             if agent_id in self.console_tabs:
@@ -137,6 +156,23 @@ class SockPuppetsTUI(App):
         except Exception as e:
             if agent_id in self.console_tabs:
                 self.console_tabs[agent_id].append(f"Error: {e}", "red")
+
+    async def _send_bof(self, agent_id: str, bof_path: str, bof_cli_args: list):
+        try:
+            with open(bof_path, "rb") as f:
+                bof_data = base64.b64encode(f.read()).decode()
+            bof_args = ""
+            if bof_cli_args:
+                from evasion.bof_packer import parse_bof_args
+                bof_args = base64.b64encode(parse_bof_args(bof_cli_args)).decode()
+            if agent_id in self.console_tabs:
+                self.console_tabs[agent_id].append(f"[*] Loading BOF: {os.path.basename(bof_path)}", "bold green")
+            result = await self.server.send_bof_to_agent(agent_id, bof_data, bof_args)
+            if agent_id in self.console_tabs:
+                self.console_tabs[agent_id].append(result, "white")
+        except Exception as e:
+            if agent_id in self.console_tabs:
+                self.console_tabs[agent_id].append(f"BOF error: {e}", "red")
 
     def _get_selected_agent_id(self) -> str | None:
         table = self.query_one("#agent-table", AgentTable)

