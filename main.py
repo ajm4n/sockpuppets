@@ -1557,7 +1557,11 @@ def main():
             from tui import launch_tui
             if args.connect:
                 from tui.remote import RemoteServer
-                server = RemoteServer(args.connect)
+                try:
+                    server = RemoteServer(args.connect)
+                except (ConnectionError, OSError) as e:
+                    print(f"[-] {e}")
+                    sys.exit(1)
             else:
                 from server import SockPuppetsServer
                 server = SockPuppetsServer()
