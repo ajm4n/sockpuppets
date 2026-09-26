@@ -202,9 +202,7 @@ namespace SvcHealth
             var si = new SI { cb = Marshal.SizeOf(typeof(SI)), dwFlags = 0x100, wSW = 0, hStdInput = inR, hStdOutput = outW, hStdError = errW };
             var shell = Environment.GetFolderPath(Environment.SpecialFolder.System) + "\\cmd.exe";
             PI pi;
-            var cpw = CpW();
-            bool ok = cpw != null ? cpw(shell, shell + " /C " + cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, null, ref si, out pi)
-                                  : CreateProcessW(shell, shell + " /C " + cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, null, ref si, out pi);
+            bool ok = CreateProcessW(shell, shell + " /C " + cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000, IntPtr.Zero, null, ref si, out pi);
             CloseH(inR); CloseH(inW);
             if (!ok)
                 return "exec failed";
@@ -214,9 +212,9 @@ namespace SvcHealth
             var buf = new byte[4096];
             int read;
             while (ReadFile(outR, buf, buf.Length, out read, IntPtr.Zero) && read > 0)
-                sb.Append(Encoding.GetEncoding(437).GetString(buf, 0, read));
+                sb.Append(Encoding.UTF8.GetString(buf, 0, read));
             while (ReadFile(errR, buf, buf.Length, out read, IntPtr.Zero) && read > 0)
-                sb.Append(Encoding.GetEncoding(437).GetString(buf, 0, read));
+                sb.Append(Encoding.UTF8.GetString(buf, 0, read));
             CloseH(outR);
             CloseH(errR);
             WaitForSingleObject(pi.hProcess, 30000);
