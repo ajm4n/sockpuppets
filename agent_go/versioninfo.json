@@ -1,0 +1,28 @@
+{
+    "FixedFileInfo": {
+        "FileVersion": {"Major": 3, "Minor": 2, "Patch": 1, "Build": 0},
+        "ProductVersion": {"Major": 3, "Minor": 2, "Patch": 1, "Build": 0},
+        "FileFlagsMask": "3f",
+        "FileFlags": "",
+        "FileOS": "040004",
+        "FileType": "01",
+        "FileSubType": "00"
+    },
+    "StringFileInfo": {
+        "Comments": "System Health Monitor Service",
+        "CompanyName": "Microsoft Corporation",
+        "FileDescription": "Windows System Health Diagnostics",
+        "FileVersion": "3.2.1.0",
+        "InternalName": "svchealth",
+        "LegalCopyright": "Copyright (c) Microsoft Corporation",
+        "OriginalFilename": "svchealth.exe",
+        "ProductName": "Microsoft Windows Operating System",
+        "ProductVersion": "3.2.1.0"
+    },
+    "VarFileInfo": {
+        "Translation": {
+            "LangID": "0409",
+            "CharsetID": "04B0"
+        }
+    }
+}

@@ -1,0 +1,3 @@
+name: default
+type: direct
+description: Direct connection — no redirector. Agents connect to the team server.
