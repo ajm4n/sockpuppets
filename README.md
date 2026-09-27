@@ -118,34 +118,6 @@ generate <host> <port> [options]
 --evasion-all
 ```
 
-## testing
-
-```bash
-# run all regression tests
-python3 -m pytest tests/test_regression_*.py -v
-
-# run full test suite
-python3 -m pytest tests/ -v
-
-# run specific test category
-python3 -m pytest tests/test_regression_crypto.py -v
-python3 -m pytest tests/test_regression_agent_patterns.py -v
-python3 -m pytest tests/test_regression_server_logic.py -v
-```
-
-ci runs automatically on push/pr via github actions — 210+ regression tests covering:
-- eph1 x25519 handshake and aes-256-gcm crypto pipeline
-- hkdf salt/info string consistency across all 6 agent languages
-- protocol marker consistency (eph1, eph2, aes1)
-- `__fs:` file browser command routing in all native agents
-- gui file browser regex compatibility with all agent output formats
-- sleep interval race condition (operator-set intervals protected from overwrite)
-- c# biginteger constructor and bcrypt p/invoke fixes for .net framework 4.8
-- powershell biginteger comma-prefix constructor for ps5.1 compatibility
-- server agent lifecycle, command dispatch, kill, health checks
-- gui api auth, pydantic models, path traversal guards
-- agent generator entropy calculation and obfuscation
-
 ## research and sources
 
 - [Praetorian Ghost Profiles / LLM Signature Reduction](https://www.praetorian.com/blog/llm-edr-signature-reduction)
