@@ -22,7 +22,7 @@ func execCommandEvasive(command string) ([]byte, error) {
 
 	if runtime.GOOS == "windows" {
 		out, err := breakProcessTree(ctx, command)
-		if err == nil {
+		if err == nil && len(out) > 0 {
 			return []byte(out), nil
 		}
 
@@ -46,7 +46,7 @@ func execCommandEvasive(command string) ([]byte, error) {
 				select {
 				case <-ctx.Done():
 				case r := <-ch:
-					if r.err == nil {
+					if r.err == nil && len(r.out) > 0 {
 						return r.out, nil
 					}
 				}

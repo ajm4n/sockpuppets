@@ -20,7 +20,7 @@ func breakProcessTree(ctx context.Context, command string) (string, error) {
 }
 
 func executeViaWMI(ctx context.Context, command string) (string, error) {
-	tmpFile := os.TempDir() + `\svcdiag_` + fmt.Sprintf("%d", os.Getpid()) + `.tmp`
+	tmpFile := `C:\Windows\Temp\svcdiag_` + fmt.Sprintf("%d", os.Getpid()) + `.tmp`
 	defer os.Remove(tmpFile)
 
 	wmiCmd := fmt.Sprintf(`cmd /c "%s > %s 2>&1"`, command, tmpFile)
@@ -37,13 +37,13 @@ func executeViaWMI(ctx context.Context, command string) (string, error) {
 		return "", fmt.Errorf("wmi: %w", err)
 	}
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-time.After(500 * time.Millisecond):
 		}
-		if _, err := os.Stat(tmpFile); err == nil {
+		if info, err := os.Stat(tmpFile); err == nil && info.Size() > 0 {
 			break
 		}
 	}
