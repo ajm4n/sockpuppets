@@ -361,6 +361,13 @@ class SockPuppetsCLI(cmd.Cmd):
             return
 
         agent = self.server.agents[agent_id]
+        if agent.socks_task:
+            agent.socks_task.cancel()
+        if agent.socks_server_obj:
+            agent.socks_server_obj.close()
+            agent.socks_server_obj = None
+            agent.socks_proxy = None
+            print(f"[*] Closed SOCKS proxy for agent {agent_id}")
         if agent.websocket and agent.websocket in self.server.active_connections:
             self.server.active_connections.discard(agent.websocket)
         del self.server.agents[agent_id]

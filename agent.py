@@ -1581,7 +1581,7 @@ def {cmd_func}(cmd):
         if result.returncode != 0:
             if garble and garble_bin in str(build_cmd[0]):
                 print(f"[!] Garble build failed, retrying with standard go build...")
-                build_cmd[0:4] = ['go', 'build']
+                build_cmd[0:5] = ['go', 'build']
                 result = _sp.run(
                     build_cmd, cwd=str(go_src.parent), env=env,
                     capture_output=True, text=True, timeout=600
