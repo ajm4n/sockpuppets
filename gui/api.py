@@ -338,7 +338,7 @@ async def generate_agents(req: GenerateRequest):
                 transport=transport,
                 beacon_interval=req.interval, beacon_jitter=req.jitter,
                 target_os=req.target_os if req.target_os != 'auto' else 'windows',
-                target_arch='amd64', garble=False,
+                target_arch='amd64', garble=True,
                 output_format=req.output_format,
             )
             results['go'] = go_path

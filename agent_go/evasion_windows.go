@@ -565,8 +565,30 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 	return output, nil
 }
 
-// findExplorerPID returns the PID of explorer.exe for parent spoofing.
-func findExplorerPID() uint32 {
+// enumerateProcessNames returns all running process names via
+// CreateToolhelp32Snapshot — no cmd.exe spawned.
+func enumerateProcessNames() []string {
+	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer syscall.CloseHandle(snapshot)
+
+	var pe syscall.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+
+	var names []string
+	err = syscall.Process32First(snapshot, &pe)
+	for err == nil {
+		name := syscall.UTF16ToString(pe.ExeFile[:])
+		names = append(names, fmt.Sprintf("%d %s", pe.ProcessID, name))
+		err = syscall.Process32Next(snapshot, &pe)
+	}
+	return names
+}
+
+// findProcessPID returns the PID of a process by name.
+func findProcessPID(target string) uint32 {
 	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
 		return 0
@@ -579,10 +601,15 @@ func findExplorerPID() uint32 {
 	err = syscall.Process32First(snapshot, &pe)
 	for err == nil {
 		name := syscall.UTF16ToString(pe.ExeFile[:])
-		if strings.EqualFold(name, "explorer.exe") {
+		if strings.EqualFold(name, target) {
 			return pe.ProcessID
 		}
 		err = syscall.Process32Next(snapshot, &pe)
 	}
 	return 0
+}
+
+// findExplorerPID returns the PID of explorer.exe for parent spoofing.
+func findExplorerPID() uint32 {
+	return findProcessPID("explorer.exe")
 }

