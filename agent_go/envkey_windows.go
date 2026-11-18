@@ -8,22 +8,14 @@ import (
 	"unsafe"
 )
 
-var (
-	modAdvapi32     = syscall.NewLazyDLL("advapi32.dll")
-	procRegOpenKeyW = modAdvapi32.NewProc("RegOpenKeyExW")
-	procRegCloseKey = modAdvapi32.NewProc("RegCloseKey")
-)
-
 const (
-	_HKEY_LOCAL_MACHINE  = 0x80000002
-	_HKEY_CURRENT_USER   = 0x80000001
-	_HKEY_CLASSES_ROOT   = 0x80000000
-	_HKEY_USERS          = 0x80000003
-	_KEY_READ            = 0x20019
+	_HKEY_LOCAL_MACHINE = 0x80000002
+	_HKEY_CURRENT_USER  = 0x80000001
+	_HKEY_CLASSES_ROOT  = 0x80000000
+	_HKEY_USERS         = 0x80000003
+	_KEY_READ           = 0x20019
 )
 
-// matchRegistry checks if a Windows registry key exists.
-// Accepts paths like "HKLM\SOFTWARE\Company" or "HKCU\Software\MyApp".
 func matchRegistry(path string) bool {
 	parts := strings.SplitN(path, `\`, 2)
 	if len(parts) != 2 {
@@ -49,8 +41,11 @@ func matchRegistry(path string) bool {
 		return false
 	}
 
+	regOpen := getProc(mAdvapi32, fRegOpenKeyExW)
+	regClose := getProc(mAdvapi32, fRegCloseKey)
+
 	var handle syscall.Handle
-	ret, _, _ := procRegOpenKeyW.Call(
+	ret, _, _ := syscall.SyscallN(regOpen,
 		rootKey,
 		uintptr(unsafe.Pointer(subKey)),
 		0,
@@ -60,6 +55,6 @@ func matchRegistry(path string) bool {
 	if ret != 0 {
 		return false
 	}
-	procRegCloseKey.Call(uintptr(handle))
+	syscall.SyscallN(regClose, uintptr(handle))
 	return true
 }

