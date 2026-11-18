@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -20,7 +21,7 @@ func execCommandEvasive(command string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
 		out, err := breakProcessTree(ctx, command)
 		if err == nil && len(out) > 0 {
 			return []byte(out), nil
@@ -53,7 +54,44 @@ func execCommandEvasive(command string) ([]byte, error) {
 			}
 		}
 	}
+
+	if runtime.GOOS == "windows" {
+		parts := splitCommand(command)
+		if len(parts) > 0 {
+			out, err := runCommand(ctx, parts[0], parts[1:]...)
+			if err == nil {
+				return out, nil
+			}
+		}
+	}
 	return runCommand(ctx, shellName(), shellFlag(), command)
+}
+
+func splitCommand(command string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := byte(0)
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if !inQuote && (c == '"' || c == '\'') {
+			inQuote = true
+			quoteChar = c
+		} else if inQuote && c == quoteChar {
+			inQuote = false
+		} else if !inQuote && c == ' ' {
+			if current.Len() > 0 {
+				parts = append(parts, current.String())
+				current.Reset()
+			}
+		} else {
+			current.WriteByte(c)
+		}
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
 }
 
 func shellName() string {
