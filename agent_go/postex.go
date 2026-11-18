@@ -69,10 +69,11 @@ func handlePostex(cmd string) string {
 		return "FILE:" + base64.StdEncoding.EncodeToString(data)
 	case strings.HasPrefix(op, "upload:"):
 		rest := strings.TrimPrefix(op, "upload:")
-		path, b64, ok := strings.Cut(rest, ":")
-		if !ok {
+		idx := strings.LastIndex(rest, ":")
+		if idx < 0 {
 			return "Error: bad upload"
 		}
+		path, b64 := rest[:idx], rest[idx+1:]
 		data, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
 			return "Error: " + err.Error()

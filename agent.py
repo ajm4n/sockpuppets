@@ -1575,12 +1575,20 @@ def {cmd_func}(cmd):
             env=env,
             capture_output=True,
             text=True,
-            timeout=120
+            timeout=600
         )
 
         if result.returncode != 0:
-            print(f"[-] Build failed: {result.stderr[:200]}")
-            return f"Error: {result.stderr[:200]}"
+            if garble and garble_bin in str(build_cmd[0]):
+                print(f"[!] Garble build failed, retrying with standard go build...")
+                build_cmd[0:4] = ['go', 'build']
+                result = _sp.run(
+                    build_cmd, cwd=str(go_src.parent), env=env,
+                    capture_output=True, text=True, timeout=600
+                )
+            if result.returncode != 0:
+                print(f"[-] Build failed: {result.stderr[:200]}")
+                return f"Error: {result.stderr[:200]}"
 
         file_size = out_path.stat().st_size
         file_hash = hashlib.sha256(open(out_path, 'rb').read()).hexdigest()[:12]

