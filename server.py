@@ -628,15 +628,7 @@ class SockPuppetsServer:
             if agent_id and agent_id in self.agents:
                 agent = self.agents[agent_id]
                 self.active_connections.discard(websocket)
-                for q in agent.socks_data_queues.values():
-                    try:
-                        q.put_nowait(None)
-                    except asyncio.QueueFull:
-                        pass
-                if agent.socks_server_obj:
-                    agent.socks_server_obj.close()
-                    agent.socks_server_obj = None
-                    agent.socks_proxy = None
+                self._cleanup_agent_socks(agent)
                 if agent.command_sender_task and not agent.command_sender_task.done():
                     agent.command_sender_task.cancel()
                     agent.command_sender_task = None
@@ -1334,7 +1326,7 @@ class SockPuppetsServer:
         }
 
     def check_agent_health(self, agent_id: str) -> str:
-        """Check if beacon agent might be dead"""
+        """Check if beacon agent might be dead; clean up SOCKS if so"""
         if agent_id not in self.agents:
             return ""
 
@@ -1356,6 +1348,9 @@ class SockPuppetsServer:
         time_since_last_seen = (datetime.now() - agent.last_seen).total_seconds()
 
         if time_since_last_seen > max_expected_interval:
+            if getattr(agent, 'socks_server_obj', None):
+                self._cleanup_agent_socks(agent)
+                logger.info(f"Cleaned up orphaned SOCKS proxy for dead agent {agent_id}")
             return f"Agent {agent_id} may be dead (last seen {int(time_since_last_seen/60)} minutes ago, expected checkin every {beacon_interval}s)"
 
         return ""
@@ -1523,6 +1518,21 @@ class SockPuppetsServer:
         except websockets.exceptions.ConnectionClosed:
             return "Downgrade failed - connection closed"
 
+    def _cleanup_agent_socks(self, agent):
+        """Tear down SOCKS proxy resources for an agent."""
+        if getattr(agent, 'socks_task', None):
+            agent.socks_task.cancel()
+            agent.socks_task = None
+        if getattr(agent, 'socks_server_obj', None):
+            agent.socks_server_obj.close()
+            agent.socks_server_obj = None
+            agent.socks_proxy = None
+        for q in getattr(agent, 'socks_data_queues', {}).values():
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
     async def kill_agent(self, agent_id: str) -> str:
         """Send kill command to terminate agent"""
         if agent_id not in self.agents:
@@ -1550,6 +1560,7 @@ class SockPuppetsServer:
 
                     if agent.websocket in self.active_connections:
                         self.active_connections.discard(agent.websocket)
+                    self._cleanup_agent_socks(agent)
                     del self.agents[agent_id]
                     self.events.emit({
                         "event": "agent_killed",
@@ -1562,6 +1573,7 @@ class SockPuppetsServer:
                         await asyncio.sleep(1)
                     else:
                         if agent_id in self.agents:
+                            self._cleanup_agent_socks(agent)
                             del self.agents[agent_id]
                         return f"Kill timeout - agent didn't check in (removed from tracking)"
             except websockets.exceptions.ConnectionClosed:
@@ -1569,6 +1581,7 @@ class SockPuppetsServer:
                     await asyncio.sleep(1)
                 else:
                     if agent_id in self.agents:
+                        self._cleanup_agent_socks(agent)
                         del self.agents[agent_id]
                     return f"Agent connection closed (removed from tracking)"
 

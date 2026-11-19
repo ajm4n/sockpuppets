@@ -361,13 +361,7 @@ class SockPuppetsCLI(cmd.Cmd):
             return
 
         agent = self.server.agents[agent_id]
-        if agent.socks_task:
-            agent.socks_task.cancel()
-        if agent.socks_server_obj:
-            agent.socks_server_obj.close()
-            agent.socks_server_obj = None
-            agent.socks_proxy = None
-            print(f"[*] Closed SOCKS proxy for agent {agent_id}")
+        self.server._cleanup_agent_socks(agent)
         if agent.websocket and agent.websocket in self.server.active_connections:
             self.server.active_connections.discard(agent.websocket)
         del self.server.agents[agent_id]
@@ -1788,6 +1782,8 @@ def main():
     parser = argparse.ArgumentParser(description='SockPuppets C2 Framework')
     parser.add_argument('--gui', nargs='?', const=13337, type=int, metavar='PORT',
                         help='Start web GUI on PORT (default: 13337)')
+    parser.add_argument('--no-api', action='store_true',
+                        help='Disable auto-start of API server (use if port 13337 conflicts)')
     parser.add_argument('--tui', action='store_true',
                         help='Start Textual TUI instead of CLI')
     parser.add_argument('--connect', type=str, metavar='HOST:PORT',
@@ -1823,10 +1819,18 @@ def main():
                 print(f"[-] {e}")
                 sys.exit(1)
 
+        # Warn if not inside tmux/screen — session is unrecoverable if terminal dies
+        if not remote and not os.environ.get('TMUX') and not os.environ.get('STY'):
+            print("\033[33m[!] Not inside tmux/screen — if this terminal dies, the server is lost.\033[0m")
+            print("\033[33m    Recommended: tmux new -s c2 && sockpuppets cli\033[0m")
+
         cli = SockPuppetsCLI(remote_server=remote)
 
         if args.gui is not None:
             cli._start_gui_on_ready = args.gui
+        elif not remote and not getattr(args, 'no_api', False):
+            # Auto-start API so other terminals can --connect
+            cli._start_gui_on_ready = 13337
 
         cli.cmdloop()
     except KeyboardInterrupt:
