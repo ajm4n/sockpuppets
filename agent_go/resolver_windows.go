@@ -4,9 +4,12 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
+
+var fwdDepth int32
 
 func getPEB() uintptr
 
@@ -228,6 +231,88 @@ func findModPath(nameHash uint32) string {
 	return ""
 }
 
+func hashNameCI(name string) uint32 {
+	h := uint32(0x811C9DC5)
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 32
+		}
+		h ^= uint32(c)
+		h *= 0x01000193
+	}
+	return h
+}
+
+func loadModByName(name string) uintptr {
+	initResolver()
+	h := hashNameCI(name)
+	if base := modCache[h]; base != 0 {
+		return base
+	}
+	k32 := findMod(mKernel32)
+	if k32 == 0 {
+		return 0
+	}
+	loadLib := findExportNoFwd(k32, fLoadLibraryW)
+	if loadLib == 0 {
+		return 0
+	}
+	nameW, _ := syscall.UTF16PtrFromString(name)
+	r, _, _ := syscall.SyscallN(loadLib, uintptr(unsafe.Pointer(nameW)))
+	if r != 0 {
+		modCache[h] = r
+	}
+	return r
+}
+
+func findExportNoFwd(base uintptr, funcHash uint32) uintptr {
+	if base == 0 {
+		return 0
+	}
+	magic := *(*uint16)(unsafe.Pointer(base))
+	if magic != 0x5A4D {
+		return 0
+	}
+	lfanew := *(*int32)(unsafe.Pointer(base + 0x3C))
+	ntHdr := base + uintptr(lfanew)
+	sig := *(*uint32)(unsafe.Pointer(ntHdr))
+	if sig != 0x00004550 {
+		return 0
+	}
+	optHdr := ntHdr + 24
+	optMagic := *(*uint16)(unsafe.Pointer(optHdr))
+	var exportRVA uint32
+	switch optMagic {
+	case 0x20B:
+		exportRVA = *(*uint32)(unsafe.Pointer(optHdr + 112))
+	case 0x10B:
+		exportRVA = *(*uint32)(unsafe.Pointer(optHdr + 96))
+	default:
+		return 0
+	}
+	if exportRVA == 0 {
+		return 0
+	}
+	expDir := base + uintptr(exportRVA)
+	numNames := *(*uint32)(unsafe.Pointer(expDir + 24))
+	addrFuncs := base + uintptr(*(*uint32)(unsafe.Pointer(expDir + 28)))
+	addrNames := base + uintptr(*(*uint32)(unsafe.Pointer(expDir + 32)))
+	addrOrds := base + uintptr(*(*uint32)(unsafe.Pointer(expDir + 36)))
+	for i := uint32(0); i < numNames; i++ {
+		nameRVA := *(*uint32)(unsafe.Pointer(addrNames + uintptr(i)*4))
+		namePtr := base + uintptr(nameRVA)
+		nameBytes := unsafe.Slice((*byte)(unsafe.Pointer(namePtr)), 128)
+		h := hashBytesCS(nameBytes)
+		if h == funcHash {
+			ord := *(*uint16)(unsafe.Pointer(addrOrds + uintptr(i)*2))
+			fRVA := *(*uint32)(unsafe.Pointer(addrFuncs + uintptr(ord)*4))
+			return base + uintptr(fRVA)
+		}
+	}
+	return 0
+}
+
 func findExportByHash(base uintptr, funcHash uint32) uintptr {
 	if base == 0 {
 		return 0
@@ -249,12 +334,14 @@ func findExportByHash(base uintptr, funcHash uint32) uintptr {
 	optHdr := ntHdr + 24
 	optMagic := *(*uint16)(unsafe.Pointer(optHdr))
 
-	var exportRVA uint32
+	var exportRVA, exportSize uint32
 	switch optMagic {
 	case 0x20B:
 		exportRVA = *(*uint32)(unsafe.Pointer(optHdr + 112))
+		exportSize = *(*uint32)(unsafe.Pointer(optHdr + 116))
 	case 0x10B:
 		exportRVA = *(*uint32)(unsafe.Pointer(optHdr + 96))
+		exportSize = *(*uint32)(unsafe.Pointer(optHdr + 100))
 	default:
 		return 0
 	}
@@ -279,11 +366,62 @@ func findExportByHash(base uintptr, funcHash uint32) uintptr {
 		if h == funcHash {
 			ord := *(*uint16)(unsafe.Pointer(addrOrds + uintptr(i)*2))
 			fRVA := *(*uint32)(unsafe.Pointer(addrFuncs + uintptr(ord)*4))
+			if fRVA >= exportRVA && fRVA < exportRVA+exportSize {
+				return resolveForwarder(base + uintptr(fRVA))
+			}
 			return base + uintptr(fRVA)
 		}
 	}
 
 	return 0
+}
+
+func resolveForwarder(addr uintptr) uintptr {
+	depth := atomic.AddInt32(&fwdDepth, 1)
+	defer atomic.AddInt32(&fwdDepth, -1)
+	if depth > 3 {
+		return 0
+	}
+	fwd := unsafe.Slice((*byte)(unsafe.Pointer(addr)), 256)
+	var s string
+	for i, b := range fwd {
+		if b == 0 {
+			s = string(fwd[:i])
+			break
+		}
+	}
+	if s == "" {
+		return 0
+	}
+	dot := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '.' {
+			dot = i
+			break
+		}
+	}
+	if dot < 0 {
+		return 0
+	}
+	modName := s[:dot] + ".dll"
+	funcName := s[dot+1:]
+	mod := loadModByName(modName)
+	if mod == 0 {
+		return 0
+	}
+	fh := hashBytesCS([]byte(funcName))
+	result := findExportByHash(mod, fh)
+	if result == 0 {
+		gpa := rpGetProcAddress
+		if gpa == 0 {
+			gpa = findExportNoFwd(findMod(mKernel32), fGetProcAddress)
+		}
+		if gpa != 0 {
+			nameA := append([]byte(funcName), 0)
+			result, _, _ = syscall.SyscallN(gpa, mod, uintptr(unsafe.Pointer(&nameA[0])))
+		}
+	}
+	return result
 }
 
 func getProc(modHash, funcHash uint32) uintptr {

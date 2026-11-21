@@ -55,6 +55,7 @@ var (
 	buildVersion    = "3.2.1"
 	buildDate       = "2024-11-15"
 	skipEvasion     = "" // set to "true" via ldflags to skip evasion delays
+	skipUnhook      = "" // set to "true" via ldflags to skip ntdll unhooking
 	polySeed        = "6c21"
 )
 
