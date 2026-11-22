@@ -193,6 +193,42 @@ class SockPuppetsTUI(App):
                         self.console_tabs[agent_id].append("Usage: execute-assembly <path> [args]", "red")
                     event.input.value = ""
                     return
+            elif command == "help":
+                event.input.value = ""
+                if agent_id in self.console_tabs:
+                    self.console_tabs[agent_id].append(
+                        "Commands: screenshot, getsystem, rev2self, steal_token <pid>,\n"
+                        "  make_token <user> <pass>, persist [reg|schtask|remove],\n"
+                        "  shinject <path>, execute-assembly <path> [args], bof <path>,\n"
+                        "  upload <local> <remote>, download <path>, ls <path>,\n"
+                        "  sleep <secs>, socks <port>, stopsocks, dormant <hours>,\n"
+                        "  upgrade, downgrade [secs], kill, desktop <action>, results, help",
+                        "cyan",
+                    )
+                return
+            elif command == "results":
+                event.input.value = ""
+                try:
+                    results_data = self.server.get_agent_results(agent_id, clear=False)
+                    if not results_data:
+                        if agent_id in self.console_tabs:
+                            self.console_tabs[agent_id].append("[*] No pending results", "yellow")
+                    else:
+                        for r in results_data:
+                            if agent_id in self.console_tabs:
+                                self.console_tabs[agent_id].append(
+                                    f"[{r.get('command','')}] {r.get('output','')}", "white"
+                                )
+                except Exception as e:
+                    if agent_id in self.console_tabs:
+                        self.console_tabs[agent_id].append(f"Error: {e}", "red")
+                return
+            elif command == "stopsocks":
+                event.input.value = ""
+                if agent_id in self.console_tabs:
+                    self.console_tabs[agent_id].append(f"agent[{agent_id}]> stopsocks", "bold cyan")
+                asyncio.ensure_future(self._stop_socks(agent_id))
+                return
             elif command.startswith("persist"):
                 parts = command.split(None, 1)
                 args = parts[1] if len(parts) > 1 else ""
@@ -327,6 +363,15 @@ class SockPuppetsTUI(App):
     async def _start_socks(self, agent_id: str, port: int, user=None, pwd=None):
         try:
             result = await self.server.start_socks_proxy(agent_id, port, user, pwd)
+            if agent_id in self.console_tabs:
+                self.console_tabs[agent_id].append(result, "green")
+        except Exception as e:
+            if agent_id in self.console_tabs:
+                self.console_tabs[agent_id].append(f"Error: {e}", "red")
+
+    async def _stop_socks(self, agent_id: str):
+        try:
+            result = await self.server.stop_socks_proxy(agent_id)
             if agent_id in self.console_tabs:
                 self.console_tabs[agent_id].append(result, "green")
         except Exception as e:

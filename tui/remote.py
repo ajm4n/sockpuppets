@@ -216,6 +216,15 @@ class RemoteServer:
     async def start_ws_listener(self, host, port):
         return await self._post("/listeners", {"type": "websocket", "host": host, "port": port})
 
-    async def start_socks_proxy(self, agent_id, port):
-        result = await self._post(f"/agents/{agent_id}/socks", {"port": port})
+    async def start_socks_proxy(self, agent_id, port, user=None, pwd=None):
+        data = {"port": port}
+        if user:
+            data["user"] = user
+        if pwd:
+            data["password"] = pwd
+        result = await self._post(f"/agents/{agent_id}/socks", data)
+        return result.get("message", str(result))
+
+    async def stop_socks_proxy(self, agent_id):
+        result = await self._delete(f"/agents/{agent_id}/socks")
         return result.get("message", str(result))
