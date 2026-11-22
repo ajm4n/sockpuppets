@@ -2082,9 +2082,13 @@ class SockPuppetsServer:
                     elif 'runner' in info:
                         await info['runner'].cleanup()
                     elif 'server' in info:
-                        info['server'].close()
-                        if hasattr(info['server'], 'wait_closed'):
-                            await info['server'].wait_closed()
+                        srv = info['server']
+                        if hasattr(srv, 'stop'):
+                            srv.stop()
+                        elif hasattr(srv, 'close'):
+                            srv.close()
+                        if hasattr(srv, 'wait_closed'):
+                            await srv.wait_closed()
                     logger.info(f"Stopped {info['type'].upper()} listener on port {info['port']}")
                 except Exception as e:
                     logger.error(f"Error stopping listener {name}: {e}")

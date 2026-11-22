@@ -393,30 +393,50 @@ def morph_python_source(source, intensity='high'):
     if intensity in ('medium', 'high'):
         result_lines.append(generate_timing_anti_debug())
 
+    # Track bracket depth to avoid inserting code inside multi-line constructs
+    bracket_depth = 0
+    for line in lines:
+        for ch in line:
+            if ch in '({[':
+                bracket_depth += 1
+            elif ch in ')}]':
+                bracket_depth -= 1
+        # Store cumulative depth at end of each line
+    # Re-compute per-line for the processing loop
+    bracket_depth = 0
+
     # Phase 3: Process each line
     for i, line in enumerate(lines):
         stripped = line.strip()
         indent = len(line) - len(line.lstrip())
         prefix = ' ' * indent
 
+        # Track bracket nesting to detect multi-line dicts/lists/calls
+        for ch in line:
+            if ch in '({[':
+                bracket_depth += 1
+            elif ch in ')}]':
+                bracket_depth -= 1
+        inside_multiline = bracket_depth != 0
+
         if not stripped or stripped.startswith('#'):
             result_lines.append(line)
             continue
 
-        # Dead code at module level before function defs
-        if random.random() < 0.05 and intensity == 'high' and indent == 0 and stripped.startswith(('def ', 'async def ')):
+        # Dead code at module level before function defs (not inside multi-line constructs)
+        if random.random() < 0.05 and intensity == 'high' and indent == 0 and not inside_multiline and stripped.startswith(('def ', 'async def ')):
             dead = generate_dead_code_block()
             for dl in dead.strip().split('\n'):
                 result_lines.append(dl)
 
-        # Opaque predicates (module level only, not inside blocks)
+        # Opaque predicates (module level only, not inside blocks or multi-line constructs)
         in_unsafe_block = False
         for prev_idx in range(max(0, i-3), i):
             prev = lines[prev_idx].strip()
             if prev.endswith(':') and prev.startswith(('try', 'except', 'finally', 'else', 'elif', 'if', 'for', 'while', 'with', 'def', 'class')):
                 in_unsafe_block = True
                 break
-        if random.random() < 0.03 and intensity == 'high' and not in_unsafe_block and indent == 0 and not stripped.startswith(('def ', 'class ', 'import ', 'from ', 'return ', 'if ', 'elif ', 'else:', 'try:', 'except', 'finally:', 'for ', 'while ', 'with ', 'async ')):
+        if random.random() < 0.03 and intensity == 'high' and not in_unsafe_block and not inside_multiline and indent == 0 and not stripped.startswith(('def ', 'class ', 'import ', 'from ', 'return ', 'if ', 'elif ', 'else:', 'try:', 'except', 'finally:', 'for ', 'while ', 'with ', 'async ')):
             pred = generate_opaque_predicate()
             result_lines.append(f"{prefix}if {pred}:")
             result_lines.append(f"{prefix}    {stripped}")
