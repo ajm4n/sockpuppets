@@ -317,7 +317,7 @@ async def execute_assembly_agent(agent_id: str, req: AssemblyRequest):
 async def dormant_agent(agent_id: str, req: DormantRequest):
     if not _server or agent_id not in _server.agents:
         raise HTTPException(404, "Agent not found")
-    command = f"dormant {req.duration}"
+    command = f"__dormant:{req.duration}"
     result = await _server.send_command_to_agent(agent_id, command)
     agent = _server.agents.get(agent_id)
     if agent and agent.mode == "beacon":

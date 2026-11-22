@@ -416,7 +416,7 @@
                     break;
                 case 'dormant':
                     var dormantHours = prompt('Go dormant for how many hours?', '8');
-                    if (dormantHours) await api('POST', '/agents/' + selectedAgentId + '/dormant', { duration: dormantHours });
+                    if (dormantHours) await api('POST', '/agents/' + selectedAgentId + '/command', { command: '__dormant:' + dormantHours });
                     break;
                 case 'files':
                     openConsole(selectedAgentId);
@@ -814,7 +814,7 @@
         } else if (cmdLower.indexOf('dormant ') === 0) {
             var duration = command.slice(8).trim();
             try {
-                var r = await api('POST', '/agents/' + agentId + '/dormant', { duration: duration });
+                var r = await api('POST', '/agents/' + agentId + '/command', { command: '__dormant:' + duration });
                 appendConsole(agentId, r.output || r.message || JSON.stringify(r), r.queued ? 'info' : 'output');
             } catch(e) { appendConsole(agentId, 'Error: ' + e.message, 'error'); }
             return;

