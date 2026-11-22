@@ -129,24 +129,35 @@ class GenerateDialog(ModalScreen):
                 Input(placeholder="8443", id="gen-port"),
             ),
             Horizontal(
+                Static("Lang: ", classes="label"),
+                Input(placeholder="all", id="gen-lang", value="all"),
+                Static("Transport: ", classes="label"),
+                Input(placeholder="websocket", id="gen-transport", value="websocket"),
+            ),
+            Horizontal(
                 Static("Profile: ", classes="label"),
                 Input(placeholder="default", id="gen-profile", value="default"),
                 Static("Patterns: ", classes="label"),
                 Input(placeholder="default", id="gen-patterns", value="default"),
             ),
             Horizontal(
-                Static("[Enter] Generate  [Esc] Cancel", classes="hint"),
+                Static("[Enter] Generate  [Esc] Cancel  Langs: python go rust csharp c powershell all", classes="hint"),
             ),
             id="generate-dialog",
         )
 
+    def _submit_form(self):
+        host = self.query_one("#gen-host", Input).value
+        port = self.query_one("#gen-port", Input).value
+        lang = self.query_one("#gen-lang", Input).value or "all"
+        transport = self.query_one("#gen-transport", Input).value or "websocket"
+        profile = self.query_one("#gen-profile", Input).value
+        patterns = self.query_one("#gen-patterns", Input).value
+        self.dismiss({"host": host, "port": port, "lang": lang, "transport": transport,
+                       "profile": profile, "patterns": patterns})
+
     def on_input_submitted(self, event):
-        if event.input.id == "gen-port":
-            host = self.query_one("#gen-host", Input).value
-            port = self.query_one("#gen-port", Input).value
-            profile = self.query_one("#gen-profile", Input).value
-            patterns = self.query_one("#gen-patterns", Input).value
-            self.dismiss({"host": host, "port": port, "profile": profile, "patterns": patterns})
+        self._submit_form()
 
 
 class StatusBar(Static):

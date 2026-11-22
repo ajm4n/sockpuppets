@@ -149,7 +149,10 @@ class RemoteServer:
 
     def get_agent_results(self, agent_id, clear=False):
         try:
-            return self._sync_get(f"/agents/{agent_id}/results")
+            path = f"/agents/{agent_id}/results"
+            if clear:
+                path += "?clear=true"
+            return self._sync_get(path)
         except Exception:
             return []
 

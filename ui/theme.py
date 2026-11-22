@@ -219,12 +219,20 @@ def print_interact_banner(agent_id, agent_info):
     cmds = [
         "[bold]back[/bold] — return to menu",
         "[bold]kill[/bold] — terminate agent",
+        "[bold]results[/bold] — view pending results",
         "[bold]sleep N[/bold] — set interval",
-        "[bold]upgrade[/bold] — switch to streaming",
-        "[bold]upgrade_ws[/bold] — HTTP beacon to WebSocket",
-        "[bold]socks[/bold] — SOCKS proxy",
+        "[bold]socks PORT[/bold] — start SOCKS proxy",
+        "[bold]stopsocks[/bold] — stop SOCKS proxy",
+        "[bold]upload/download[/bold] — file transfer",
+        "[bold]screenshot[/bold] — capture screen",
+        "[bold]persist[/bold] — install persistence",
+        "[bold]shinject[/bold] — inject shellcode",
+        "[bold]execute-assembly[/bold] — run .NET assembly",
+        "[bold]bof[/bold] — load BOF",
+        "[bold]upgrade/downgrade[/bold] — switch mode",
+        "[bold]dormant N[/bold] — sleep hours",
     ]
-    console.print(f"  [dim]Commands: {' | '.join(cmds)}[/dim]")
+    console.print(f"  [dim]{'  '.join(cmds)}[/dim]")
 
 
 def print_command_result(command, output):
