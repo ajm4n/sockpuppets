@@ -214,7 +214,7 @@ def {func}():
     _t1 = time.perf_counter_ns()
     _x = sum(range(1000))
     _t2 = time.perf_counter_ns()
-    if (_t2 - _t1) > 50000000:  # >50ms = debugger stepping
+    if (_t2 - _t1) > 500000000:  # >500ms = debugger stepping
         import sys
         sys.exit(0)
     return _x
@@ -315,8 +315,10 @@ def _add_junk_padding(source):
 
         # At module level, between functions, add variable padding
         if line.strip() == '' and i > 0 and i < len(lines) - 1:
-            next_line = lines[i + 1].strip() if i + 1 < len(lines) else ''
-            if next_line.startswith(('def ', 'async def ', 'class ')):
+            next_raw = lines[i + 1] if i + 1 < len(lines) else ''
+            next_line = next_raw.strip()
+            next_indent = len(next_raw) - len(next_raw.lstrip())
+            if next_indent == 0 and next_line.startswith(('def ', 'async def ', 'class ')):
                 # Add padding block: mix of variable assignments and large unique string constants
                 num_pad = random.randint(3, 12)
                 for _ in range(num_pad):

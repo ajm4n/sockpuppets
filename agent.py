@@ -1164,7 +1164,7 @@ def {cmd_func}(cmd):
                               idle_encrypt: int = 30, profile: str = 'default',
                               redirector: str = None, bof: bool = False,
                               obfuscation: str = None,
-                              transport: str = 'websocket') -> str:
+                              transport: str = 'websocket', evasion: bool = True) -> str:
         """Generate Python agent with polymorphic obfuscation and OS-specific features
 
         Args:
@@ -1312,7 +1312,7 @@ def {cmd_func}(cmd):
             'macos': (self._evasion_macos, 'sandbox detect, PT_DENY_ATTACH, process hiding, core dump disable'),
         }
         evasion_code, evasion_desc = evasion_map.get(target_os, ('', ''))
-        if evasion_code:
+        if evasion_code and evasion:
             evasion_injection = self._prepare_python_evasion(evasion_code, target_os)
             shebang_end = content.find('\n', content.find('#!/usr/bin/env python3'))
             if shebang_end > 0:
@@ -2899,7 +2899,7 @@ unsigned int {var_name}_len = {len(data)};
                      idle_encrypt: int = 30, profile: str = 'default',
                      redirector: str = None, bof: bool = False,
                      obfuscation: str = None,
-                     transport: str = 'websocket') -> dict:
+                     transport: str = 'websocket', evasion: bool = True) -> dict:
         """Generate agents for all platforms
 
         Args:
@@ -2950,7 +2950,7 @@ unsigned int {var_name}_len = {len(data)};
                     sleep_obf=sleep_obf, idle_encrypt=idle_encrypt, profile=profile,
                     redirector=redirector, bof=bof,
                     obfuscation=obfuscation,
-                    transport=transport
+                    transport=transport, evasion=evasion
                 )
                 if beacon_mode:
                     jitter_desc = f" ±{beacon_jitter}%" if beacon_jitter > 0 else ""

