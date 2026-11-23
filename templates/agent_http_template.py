@@ -652,7 +652,11 @@ if __name__ == '__main__':
         except Exception:
             pass
 
-    try:
-        connect_to_server()
-    except KeyboardInterrupt:
-        pass
+    while True:
+        try:
+            connect_to_server()
+            break
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            time.sleep(10)

