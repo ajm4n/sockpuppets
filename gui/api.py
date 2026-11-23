@@ -407,6 +407,8 @@ async def remove_agent(agent_id: str):
 
 @router.post("/generate")
 async def generate_agents(req: GenerateRequest):
+    import importlib, agent as _agent_mod
+    importlib.reload(_agent_mod)
     from agent import AgentGenerator
     generator = AgentGenerator(patterns=req.patterns)
     results = {}

@@ -293,14 +293,18 @@ if __name__ == '__main__':
         try:
             import ctypes
             ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
-        except:
+        except Exception:
             pass
         try:
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         except AttributeError:
             pass
 
-    try:
-        asyncio.run(connect_to_server())
-    except KeyboardInterrupt:
-        pass
+    while True:
+        try:
+            asyncio.run(connect_to_server())
+            break
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            time.sleep(10)

