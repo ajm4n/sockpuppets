@@ -151,8 +151,8 @@ class UITests(unittest.TestCase):
             "hostname": "lab", "username": "user", "os": "Windows",
             "mode": "beacon", "transport": "http", "beacon_interval": 30,
         }))
-        self.assertIn("upgrade_ws", text)
-        self.assertNotIn("socks PORT", text)
+        self.assertIn("upgrade", text)
+        self.assertIn("downgrade", text)
         text = self._render(lambda: print_command_result("whoami [x]", "lab\\user"))
         self.assertIn("whoami", text)
         self.assertIn("lab", text)
@@ -201,8 +201,8 @@ class CLITests(unittest.TestCase):
             "agent_http_beacon_minimal.py": "stealth_sleep(sleep_time)",
             "agent_template.py": "stealth_sleep(sleep_time)",
             "agent_beacon_minimal.py": "stealth_sleep(sleep_time)",
-            "agent_dns_template.py": "stealth_sleep(BEACON_INTERVAL)",
-            "agent_smb_template.py": "stealth_sleep(BEACON_INTERVAL)",
+            "agent_dns_template.py": "stealth_sleep(sleep_time)",
+            "agent_smb_template.py": "stealth_sleep(sleep_time)",
             "agent_http_template.ps1": "Invoke-SleepEncrypt",
             "agent_http_template.js": "stealthSleep(sleepTime)",
             "agent_http_template.hta": "StealthSleep sleepTime",

