@@ -295,8 +295,7 @@ async def beacon_mode(websocket, agent_id, beacon_interval, beacon_jitter, pendi
                 pass
         pending_results.clear()
 
-    # Step 2: Fetch all queued commands
-    pending_commands.clear()
+    # Step 2: Fetch queued commands (preserve any from checkin_ack)
     upgrade_requested = False
     streaming_module = None
 
@@ -423,6 +422,14 @@ async def connect_to_server():
                     new_id = reg_data.get('agent_id')
                     if new_id and new_id != agent_id:
                         agent_id = new_id
+
+                    # Process any commands included in checkin_ack
+                    for ack_cmd in reg_data.get('commands', []):
+                        if isinstance(ack_cmd, dict):
+                            pending_commands.append({
+                                'command': ack_cmd.get('command', ''),
+                                'timestamp': ack_cmd.get('timestamp', '')
+                            })
 
                     # Run beacon cycle (may return if upgraded to streaming)
                     result = await beacon_mode(websocket, agent_id, beacon_interval,

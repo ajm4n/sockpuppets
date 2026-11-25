@@ -99,6 +99,7 @@ class GenerateRequest(BaseModel):
     target_os: str = "auto"
     bof: bool = False
     obfuscation: str | None = None
+    obfuscate: bool = True
     output_format: str = "exe"
     shellcode_format: str = "raw"
     transport: str | None = None
@@ -443,7 +444,7 @@ async def generate_agents(req: GenerateRequest):
             inject=req.inject, inject_target=req.inject_target,
             sleep_obf=req.sleep_obf, idle_encrypt=req.idle_encrypt,
             profile=req.profile, target_os=req.target_os, redirector=req.redirector,
-            bof=req.bof, obfuscation=req.obfuscation,
+            bof=req.bof, obfuscation=req.obfuscation, obfuscate=req.obfuscate,
             transport=transport, evasion=req.evasion,
         )
         results.update(py_results)

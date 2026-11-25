@@ -2918,7 +2918,7 @@ unsigned int {var_name}_len = {len(data)};
                      inject: str = None, inject_target: str = None, sleep_obf: str = None,
                      idle_encrypt: int = 30, profile: str = 'default',
                      redirector: str = None, bof: bool = False,
-                     obfuscation: str = None,
+                     obfuscation: str = None, obfuscate: bool = True,
                      transport: str = 'websocket', evasion: bool = True) -> dict:
         """Generate agents for all platforms
 
@@ -2964,7 +2964,7 @@ unsigned int {var_name}_len = {len(data)};
                 results[os_key] = self.generate_python_agent(
                     c2_host, c2_port, encryption_key,
                     beacon_mode, beacon_interval, beacon_jitter,
-                    unique_key=unique_key, target_os=os_type,
+                    obfuscate=obfuscate, unique_key=unique_key, target_os=os_type,
                     amsi=amsi, etw=etw, syscalls=syscalls,
                     inject=inject, inject_target=inject_target,
                     sleep_obf=sleep_obf, idle_encrypt=idle_encrypt, profile=profile,
