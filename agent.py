@@ -1494,7 +1494,10 @@ subprocess.Popen(
         pkg = 'main'
         # Determine transport type and agent mode
         transport_type = transport if transport in ('websocket', 'ws') else scheme
-        agent_mode = 'beacon' if beacon_interval > 0 else 'streaming'
+        if transport in ('websocket', 'ws'):
+            agent_mode = 'streaming'
+        else:
+            agent_mode = 'beacon' if beacon_interval > 0 else 'streaming'
 
         ldflag_parts = [
             f'-X {pkg}.configEndpoint={c2_host}',
